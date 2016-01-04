@@ -23,12 +23,6 @@ type Frame struct {
 	Payload  []byte
 }
 
-// type Stream struct {
-// 	ID  uint16
-// 	in  chan []byte
-// 	out chan []byte
-// }
-
 type LocalServer struct {
 	laddr *net.TCPAddr
 	raddr *net.TCPAddr
@@ -63,76 +57,7 @@ func NewLocalServer(laddr, raddr string) (*LocalServer, error) {
 
 func (t *LocalServer) serve() {
 	// establish a local to remote LocalServer
-	// TODO: recover connection when broken
-	go func() {
-		for {
-			conn, err := net.DialTCP("tcp", nil, t.raddr)
-			if err != nil {
-				log.Warn("net.DialTCP(%s) error:%v", t.raddr.String(), err)
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			// receive local packets and send to remote
-			go func() {
-				defer func() {
-					log.Info("local server exit")
-				}()
-				// var data []byte
-				for {
-					select {
-					case data := <-t.in:
-						n, err := conn.Write(data)
-						if err != nil {
-							log.Error("conn.write error:%v", err)
-							return
-						}
-						if n != len(data) {
-							log.Warn("data length:%d, write length:%d", len(data), n)
-							return
-						}
-					}
-				}
-			}()
-
-			t.rConn = conn
-			for {
-				// TODO: use pool
-				buf := make([]byte, BUF_SIZE)
-				n, err := t.rConn.Read(buf[:5])
-				if err != nil || n != 5 {
-					log.Error("rConn read error:%v", err)
-					//  clear
-					for k, v := range t.streams {
-						close(v)
-						delete(t.streams, k)
-					}
-					break
-				}
-
-				f := Frame{
-					StreamID: uint16(buf[0]<<8 + buf[1]),
-					Cmd:      buf[2],
-					Length:   uint16(buf[3]<<8 + buf[4]),
-				}
-				n, err = t.rConn.Read(buf[:f.Length])
-				if err != nil || n != int(f.Length) {
-					log.Error("rConn read error:%v", err)
-					//  clear
-					for k, v := range t.streams {
-						close(v)
-						delete(t.streams, k)
-					}
-					break
-				}
-				f.Payload = buf[:f.Length]
-
-				// publish to stream
-				t.publishStream(f)
-
-			}
-		}
-	}()
+	go t.tunnel()
 
 	// start local listenner
 	l, err := net.ListenTCP("tcp", t.laddr)
@@ -149,8 +74,55 @@ func (t *LocalServer) serve() {
 		}
 		sid := t.nextStreamID()
 		// subscribe
-		t.subscribeStream(sid, make(chan Frame))
+		t.subscribeStream(sid)
 		go t.handleLocalConn(sid, conn)
+	}
+}
+
+func (ls *LocalServer) tunnel() {
+	for {
+		// establish TCP connection
+		conn, err := net.DialTCP("tcp", nil, ls.raddr)
+		if err != nil {
+			log.Warn("net.DialTCP(%s) error:%v", ls.raddr.String(), err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		ls.rConn = conn
+
+		// receive local packets and send to remote
+		go func() {
+			defer func() {
+				log.Info("local server exit")
+			}()
+			for {
+				select {
+				case data := <-ls.in:
+					_, err := writeBytes(ls.rConn, data)
+					if err != nil {
+						log.Error("conn.write error:%v", err)
+						return
+					}
+				}
+			}
+		}()
+
+		for {
+			// TODO: use pool
+			f, err := readFrame(ls.rConn)
+			if err != nil {
+				log.Error("rConn read error:%v", err)
+				//  clear
+				for k, v := range ls.streams {
+					close(v)
+					delete(ls.streams, k)
+				}
+				break
+			}
+
+			// publish to stream
+			ls.publishStream(*f)
+		}
 	}
 }
 
@@ -161,12 +133,12 @@ func (t *LocalServer) nextStreamID() uint16 {
 	return t.streamID
 }
 
-func (t *LocalServer) subscribeStream(sid uint16, f chan Frame) {
+func (t *LocalServer) subscribeStream(sid uint16) {
 	if _, ok := t.streams[sid]; ok {
 		log.Warn("sid round back")
 	}
 
-	t.streams[sid] = f
+	t.streams[sid] = make(chan Frame)
 }
 
 func (t *LocalServer) publishStream(f Frame) {
