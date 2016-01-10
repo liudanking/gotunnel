@@ -47,3 +47,15 @@ func writeBytes(w io.Writer, p []byte) (int, error) {
 
 	return n, nil
 }
+
+func frameHeader(sid uint16, status byte, length uint16, buf []byte) {
+	if len(buf) < 5 {
+		log.Error("buf is too small")
+		return
+	}
+	buf[0] = byte(sid >> 8)
+	buf[1] = byte(sid & 0x00ff)
+	buf[2] = status
+	buf[3] = byte(length >> 8)
+	buf[4] = byte(length & 0x00ff)
+}

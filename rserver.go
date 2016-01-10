@@ -1,16 +1,19 @@
 package main
 
 import (
+	"sync"
+
 	log "github.com/liudanking/log4go"
 
 	"net"
 )
 
 type RemoteServer struct {
-	laddr   *net.TCPAddr
-	raddr   *net.TCPAddr
-	streams map[uint16]chan Frame
-	in      chan []byte
+	laddr        *net.TCPAddr
+	raddr        *net.TCPAddr
+	streams      map[uint16]chan Frame
+	streamMapMtx *sync.Mutex
+	in           chan []byte
 }
 
 func NewRemoteServer(laddr, raddr string) (*RemoteServer, error) {
@@ -24,12 +27,26 @@ func NewRemoteServer(laddr, raddr string) (*RemoteServer, error) {
 	}
 
 	rs := &RemoteServer{
-		laddr:   a1,
-		raddr:   a2,
-		streams: make(map[uint16]chan Frame),
-		in:      make(chan []byte),
+		laddr:        a1,
+		raddr:        a2,
+		streams:      make(map[uint16]chan Frame),
+		streamMapMtx: &sync.Mutex{},
+		in:           make(chan []byte),
 	}
 	return rs, nil
+}
+
+func (r *RemoteServer) getStream(sid uint16) (f chan Frame, ok bool) {
+	r.streamMapMtx.Lock()
+	f, ok = r.streams[sid]
+	r.streamMapMtx.Unlock()
+	return f, ok
+}
+
+func (r *RemoteServer) delStream(sid uint16) {
+	r.streamMapMtx.Lock()
+	delete(r.streams, sid)
+	r.streamMapMtx.Unlock()
 }
 
 func (r *RemoteServer) serve() {
@@ -60,18 +77,25 @@ func (r *RemoteServer) handleConn(conn *net.TCPConn) {
 				return
 			}
 			var frame chan Frame
-			if f, ok := r.streams[_f.StreamID]; ok {
-				frame = f
-			} else {
+			if _f.Cmd == S_START {
 				c, err := net.DialTCP("tcp", nil, r.raddr)
 				if err != nil {
 					log.Error("net.DialTCP(%s) error:%v", r.raddr.String(), err)
-					// TODO: send STOP frame
+					buf := make([]byte, 5)
+					frameHeader(_f.StreamID, S_STOP, 0, buf)
+					r.in <- buf
 					continue
 				}
 				frame = make(chan Frame)
 				r.streams[_f.StreamID] = frame
 				go r.handleRemoteConn(_f.StreamID, c, r.streams[_f.StreamID])
+			} else {
+				if f, ok := r.getStream(_f.StreamID); ok {
+					frame = f
+				} else {
+					log.Error("frame channel of stream %d not found", _f.StreamID)
+					continue
+				}
 			}
 			log.Debug("frame data:%v", _f.Payload)
 			frame <- *_f
@@ -97,12 +121,20 @@ func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame cha
 			select {
 			case f := <-frame:
 				log.Debug("receive a frame:%++v", f)
-				n, err := writeBytes(conn, f.Payload)
-				if err != nil {
-					log.Error("conn.Write error:%v", err)
-					return
+				switch f.Cmd {
+				case S_START, S_TRANS:
+					n, err := writeBytes(conn, f.Payload)
+					if err != nil {
+						log.Error("conn.Write error:%v", err)
+						conn.CloseWrite()
+						return
+					}
+					log.Debug("write %d bytes", n)
+				case S_STOP:
+					conn.Close()
+					r.delStream(sid)
+					close(frame)
 				}
-				log.Debug("write %d bytes", n)
 			}
 		}
 	}()
@@ -112,16 +144,11 @@ func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame cha
 		n, err := conn.Read(buf[5:])
 		if err != nil {
 			log.Error("conn.read error:%v", err)
-			conn.Close()
+			conn.CloseRead()
 			return
 		}
 		log.Debug("read msg:%v", buf[:5+n])
-
-		buf[0] = byte(sid >> 8)
-		buf[1] = byte(sid & 0x00ff)
-		buf[2] = S_TRANS
-		buf[3] = byte(n >> 8)
-		buf[4] = byte(n & 0x00ff)
+		frameHeader(sid, S_TRANS, uint16(n), buf)
 		r.in <- buf[:5+n]
 
 	}
