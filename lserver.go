@@ -152,7 +152,7 @@ func (ls *LocalServer) delStream(sid uint16) {
 
 func (ls *LocalServer) subscribeStream(sid uint16) (f chan Frame) {
 	ls.streamMapMtx.Lock()
-	if _, ok := ls.getStream(sid); ok {
+	if _, ok := ls.streams[sid]; ok {
 		// TODO: solve sid round back problem
 		log.Warn("sid round back")
 	}
@@ -209,6 +209,7 @@ func (t *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TC
 					frameHeader(sid, S_TRANS, uint16(n), buf)
 				}
 			}
+			log.Info("read %d bytes", n)
 			// send to LocalServer
 			t.in <- buf[:5+n]
 		}
@@ -219,10 +220,11 @@ func (t *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TC
 		select {
 		case f, ok := <-frame:
 			if !ok {
+				log.Info("arg0")
 				return
 			}
 			switch f.Cmd {
-			case S_TRANS, S_START:
+			case S_START, S_TRANS:
 				n, err := conn.Write(f.Payload)
 				if err != nil {
 					log.Error("write remote to local error:%v", err)
