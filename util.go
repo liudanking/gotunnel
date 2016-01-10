@@ -25,13 +25,14 @@ func readFrame(r io.Reader) (*Frame, error) {
 	log.Debug("read a frame:%+v", f)
 	n, err = r.Read(buf[:f.Length])
 	if err != nil {
+		log.Error("read eror:%v", err)
 		return nil, err
 	}
 	if n != int(f.Length) {
 		log.Error("read %d bytes, expect read %d bytes", n, f.Length)
 		return nil, errors.New("read frame payload error")
 	}
-
+	f.Payload = buf[:f.Length]
 	return f, nil
 }
 

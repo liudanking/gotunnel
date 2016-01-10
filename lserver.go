@@ -73,6 +73,8 @@ func (t *LocalServer) serve() {
 			continue
 		}
 		sid := t.nextStreamID()
+		log.Debug("accept a connection:%s, stream %d", conn.RemoteAddr().String(), sid)
+
 		// subscribe
 		t.subscribeStream(sid)
 		go t.handleLocalConn(sid, conn)
@@ -178,6 +180,8 @@ func (t *LocalServer) handleLocalConn(sid uint16, conn *net.TCPConn) {
 		buf[4] = byte(uint16(n) & 0x00ff)
 	}
 
+	log.Debug("start msg: %d bytes, %v, %s", n, buf[:5+n], string(buf[5:5+n]))
+
 	// send to LocalServer
 	t.in <- buf[:5+n]
 
@@ -194,12 +198,12 @@ func (t *LocalServer) handleLocalConn(sid uint16, conn *net.TCPConn) {
 			} else {
 				buf[0] = byte(sid >> 8)
 				buf[1] = byte(sid & 0x00ff)
-				buf[2] = S_START
+				buf[2] = S_TRANS
 				buf[3] = byte(uint16(n) >> 8)
 				buf[4] = byte(uint16(n) & 0x00ff)
 			}
 			// send to LocalServer
-			t.in <- buf
+			t.in <- buf[:5+n]
 		}
 	}()
 

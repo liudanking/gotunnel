@@ -45,38 +45,43 @@ func (r *RemoteServer) serve() {
 			log.Error("listenner accept connection error:%v", err)
 			continue
 		}
+		log.Debug("accept a connection:%s", conn.RemoteAddr().String())
 		// TODO: support concurrent
 		go r.handleConn(conn)
 	}
 }
 
 func (r *RemoteServer) handleConn(conn *net.TCPConn) {
-	for {
-		_f, err := readFrame(conn)
-		if err != nil {
-			log.Error("readFrame error:%v", err)
-			return
-		}
-		var frame chan Frame
-		if f, ok := r.streams[_f.StreamID]; ok {
-			frame = f
-		} else {
-			c, err := net.DialTCP("tcp", nil, r.raddr)
+	go func() {
+		for {
+			_f, err := readFrame(conn)
 			if err != nil {
-				log.Error("net.DialTCP(%s) error:%v", r.raddr.String(), err)
-				// TODO: send STOP frame
-				continue
+				log.Error("readFrame error:%v", err)
+				return
 			}
-			frame = make(chan Frame)
-			r.streams[_f.StreamID] = frame
-			go r.handleRemoteConn(_f.StreamID, c, r.streams[_f.StreamID])
+			var frame chan Frame
+			if f, ok := r.streams[_f.StreamID]; ok {
+				frame = f
+			} else {
+				c, err := net.DialTCP("tcp", nil, r.raddr)
+				if err != nil {
+					log.Error("net.DialTCP(%s) error:%v", r.raddr.String(), err)
+					// TODO: send STOP frame
+					continue
+				}
+				frame = make(chan Frame)
+				r.streams[_f.StreamID] = frame
+				go r.handleRemoteConn(_f.StreamID, c, r.streams[_f.StreamID])
+			}
+			log.Debug("frame data:%v", _f.Payload)
+			frame <- *_f
 		}
-		frame <- *_f
-	}
+	}()
 
 	for {
 		select {
 		case data := <-r.in:
+			log.Debug("r.in")
 			_, err := writeBytes(conn, data)
 			if err != nil {
 				log.Error("conn.Write error:%v", err)
@@ -91,11 +96,13 @@ func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame cha
 		for {
 			select {
 			case f := <-frame:
-				_, err := writeBytes(conn, f.Payload)
+				log.Debug("receive a frame:%++v", f)
+				n, err := writeBytes(conn, f.Payload)
 				if err != nil {
 					log.Error("conn.Write error:%v", err)
 					return
 				}
+				log.Debug("write %d bytes", n)
 			}
 		}
 	}()
@@ -108,13 +115,14 @@ func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame cha
 			conn.Close()
 			return
 		}
+		log.Debug("read msg:%v", buf[:5+n])
 
 		buf[0] = byte(sid >> 8)
 		buf[1] = byte(sid & 0x00ff)
 		buf[2] = S_TRANS
 		buf[3] = byte(n >> 8)
 		buf[4] = byte(n & 0x00ff)
-		r.in <- buf
+		r.in <- buf[:5+n]
 
 	}
 }
