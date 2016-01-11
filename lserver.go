@@ -182,7 +182,7 @@ func (t *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TC
 	defer func() {
 		// conn.Close()
 		t.delStream(sid)
-		close(frame)
+		// close(frame)
 		frameHeader(sid, S_STOP, 0, buf)
 		t.in <- buf[:5]
 		log.Debug("handleLocalConn exit, stream: %d", sid)
@@ -223,6 +223,7 @@ func (t *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TC
 				log.Info("arg0")
 				return
 			}
+			log.Debug("receive a frame:%s", string(f.Payload))
 			switch f.Cmd {
 			case S_START, S_TRANS:
 				n, err := conn.Write(f.Payload)

@@ -147,8 +147,9 @@ func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame cha
 			conn.CloseRead()
 			return
 		}
-		log.Debug("read msg:%v", buf[:5+n])
+		log.Debug("read a msg (%d bytes):%s", n, string(buf[5:5+n]))
 		frameHeader(sid, S_TRANS, uint16(n), buf)
+		log.Debug("header:%+v", buf[:5])
 		r.in <- buf[:5+n]
 
 	}

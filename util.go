@@ -18,9 +18,9 @@ func readFrame(r io.Reader) (*Frame, error) {
 		return nil, errors.New("read frame header error")
 	}
 	f := &Frame{
-		StreamID: uint16(buf[0]<<8 + buf[1]),
+		StreamID: uint16(buf[0])<<8 + uint16(buf[1]),
 		Cmd:      buf[2],
-		Length:   uint16(buf[3]<<8 + buf[4]),
+		Length:   uint16(buf[3])<<8 + uint16(buf[4]),
 	}
 	log.Debug("read a frame:%+v", f)
 	n, err = r.Read(buf[:f.Length])
