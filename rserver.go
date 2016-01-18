@@ -43,6 +43,12 @@ func (r *RemoteServer) getStream(sid uint16) (f chan Frame, ok bool) {
 	return f, ok
 }
 
+func (r *RemoteServer) setStream(sid uint16, f chan Frame) {
+	r.streamMapMtx.Lock()
+	r.streams[sid] = f
+	r.streamMapMtx.Unlock()
+}
+
 func (r *RemoteServer) delStream(sid uint16) {
 	r.streamMapMtx.Lock()
 	delete(r.streams, sid)
@@ -77,7 +83,8 @@ func (r *RemoteServer) handleConn(conn *net.TCPConn) {
 				return
 			}
 			var frame chan Frame
-			if _f.Cmd == S_START {
+			switch _f.Cmd {
+			case S_START:
 				c, err := net.DialTCP("tcp", nil, r.raddr)
 				if err != nil {
 					log.Error("net.DialTCP(%s) error:%v", r.raddr.String(), err)
@@ -87,18 +94,28 @@ func (r *RemoteServer) handleConn(conn *net.TCPConn) {
 					continue
 				}
 				frame = make(chan Frame)
-				r.streams[_f.StreamID] = frame
-				go r.handleRemoteConn(_f.StreamID, c, r.streams[_f.StreamID])
-			} else {
+				r.setStream(_f.StreamID, frame)
+				go r.handleRemoteConn(_f.StreamID, c, frame)
+				log.Debug("start stream %d", _f.StreamID)
+				frame <- *_f
+				log.Debug("frame:%v", *_f)
+			case S_TRANS:
 				if f, ok := r.getStream(_f.StreamID); ok {
 					frame = f
+					log.Debug("frame data:%v", _f.Payload)
+					frame <- *_f
 				} else {
 					log.Error("frame channel of stream %d not found", _f.StreamID)
-					continue
 				}
+			case S_STOP:
+				if f, ok := r.getStream(_f.StreamID); ok {
+					close(f)
+					log.Debug("stream %d channel closed", _f.StreamID)
+				}
+
+				r.delStream(_f.StreamID)
+				log.Debug("stream %d deleted", _f.StreamID)
 			}
-			log.Debug("frame data:%v", _f.Payload)
-			frame <- *_f
 		}
 	}()
 
@@ -119,8 +136,14 @@ func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame cha
 	go func() {
 		for {
 			select {
-			case f := <-frame:
-				log.Debug("receive a frame:%++v", f)
+			case f, ok := <-frame:
+				if !ok {
+					conn.Close()
+					r.delStream(f.StreamID)
+					log.Debug("stream %d channel closed", f.StreamID)
+					return
+				}
+				log.Debug("receive a frame:%+v", f)
 				switch f.Cmd {
 				case S_START, S_TRANS:
 					n, err := writeBytes(conn, f.Payload)
@@ -134,6 +157,7 @@ func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame cha
 					conn.Close()
 					r.delStream(sid)
 					close(frame)
+					return
 				}
 			}
 		}
@@ -147,10 +171,10 @@ func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame cha
 			conn.CloseRead()
 			return
 		}
-		log.Debug("read a msg (%d bytes):%s", n, string(buf[5:5+n]))
+		log.Debug("read a msg %d bytes", n)
 		frameHeader(sid, S_TRANS, uint16(n), buf)
 		log.Debug("header:%+v", buf[:5])
 		r.in <- buf[:5+n]
-
+		log.Debug("send to tunnel")
 	}
 }

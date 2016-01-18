@@ -23,6 +23,10 @@ func readFrame(r io.Reader) (*Frame, error) {
 		Length:   uint16(buf[3])<<8 + uint16(buf[4]),
 	}
 	log.Debug("read a frame:%+v", f)
+	if f.Length == 0 {
+		return f, nil
+	}
+
 	n, err = r.Read(buf[:f.Length])
 	if err != nil {
 		log.Error("read eror:%v", err)
