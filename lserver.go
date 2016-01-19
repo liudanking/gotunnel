@@ -181,8 +181,8 @@ func (t *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TC
 	buf := make([]byte, BUF_SIZE)
 	defer func() {
 		conn.Close()
-		t.delStream(sid)
 		close(frame)
+		t.delStream(sid)
 		frameHeader(sid, S_STOP, 0, buf)
 		t.in <- buf[:5]
 		log.Debug("handleLocalConn exit, stream: %d", sid)
