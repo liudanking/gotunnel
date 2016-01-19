@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	_ "net/http/pprof"
 
 	log "github.com/liudanking/log4go"
 )
@@ -11,6 +12,13 @@ func main() {
 	laddr := flag.String("l", "127.0.0.1:9000", "local address")
 	raddr := flag.String("r", "127.0.0.1:9001", "remote address")
 	flag.Parse()
+
+	// go func() {
+	// 	err := http.ListenAndServe("localhost:6060", nil)
+	// 	if err != nil {
+	// 		log.Error("pprof error:%v", err)
+	// 	}
+	// }()
 
 	switch *mode {
 	case "local":

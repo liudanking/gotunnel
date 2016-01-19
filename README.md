@@ -9,5 +9,10 @@ A light weight Multiplexing TCP tunnel written in Go.
 
 # TODO
 * struct Frame --> []byte Frame
-* custom memory pool. Ref goim
+* custom memory pool. Ref goim libs/bytes/buffer.go
 * buffered channel for frame
+
+
+# Credits
+
+* [goim](https://github.com/Terry-Mao/goim)
