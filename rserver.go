@@ -77,17 +77,17 @@ func (r *RemoteServer) serve() {
 
 func (r *RemoteServer) handleConn(conn *net.TCPConn) {
 	go func() {
-		_f := Frame{}
+		f := Frame{}
 		for {
-			_f.Buffer = getBuffer()
-			err := readFrame(conn, &_f)
+			f.Buffer = getBuffer()
+			err := readFrame(conn, &f)
 			if err != nil {
 				log.Error("readFrame error:%v", err)
 				return
 			}
-			streamID := _f.StreamID()
-			cmd := _f.Cmd()
-			length := _f.Length()
+			streamID := f.StreamID()
+			cmd := f.Cmd()
+			length := f.Length()
 			log.Debug("frame stream %d, cmd %d, length %d", streamID, cmd, length)
 
 			switch cmd {
@@ -97,27 +97,22 @@ func (r *RemoteServer) handleConn(conn *net.TCPConn) {
 					log.Error("net.DialTCP(%s) error:%v", r.raddr.String(), err)
 					buf := make([]byte, 5)
 					frameHeader(streamID, S_STOP, 0, buf)
-					r.in <- _f
+					r.in <- f
 					continue
 				}
-				frame := make(chan Frame)
-				r.setStream(streamID, frame)
+				frame := r.subscribeStream(streamID)
 				go r.handleRemoteConn(streamID, c, frame)
 				log.Debug("start stream %d", streamID)
-				frame <- _f
+				r.publishStream(f)
 			case S_TRANS:
-				if frame, ok := r.getStream(streamID); ok {
-					frame <- _f
-				} else {
-					log.Error("frame channel of stream %d not found", streamID)
-				}
+				r.publishStream(f)
 			case S_STOP:
-				if f, ok := r.getStream(streamID); ok {
-					close(f)
+				if cf, ok := r.getStream(streamID); ok {
+					close(cf)
+					r.delStream(streamID)
 					log.Debug("stream %d channel closed", streamID)
 				}
 
-				r.delStream(streamID)
 				log.Debug("stream %d deleted", streamID)
 			}
 		}
@@ -137,69 +132,90 @@ func (r *RemoteServer) handleConn(conn *net.TCPConn) {
 	}
 }
 
+func (r *RemoteServer) subscribeStream(sid uint16) (f chan Frame) {
+	r.streamMapMtx.Lock()
+	if _, ok := r.streams[sid]; ok {
+		// TODO: solve sid round back problem
+		log.Warn("sid round back")
+	}
+	f = make(chan Frame)
+	r.streams[sid] = f
+	r.streamMapMtx.Unlock()
+	return f
+}
+
+func (r *RemoteServer) publishStream(f Frame) {
+	defer func() {
+		putBuffer(f.Buffer)
+		if err := recover(); err != nil {
+			// this happens when write on closed channel cf
+			log.Error("panic in publishStream:%v", err)
+		}
+	}()
+	if cf, ok := r.getStream(f.StreamID()); !ok {
+		log.Warn("stream %d not found", f.StreamID())
+		return
+	} else {
+		cf <- f
+	}
+}
+
 func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame chan Frame) {
-	writeFinished := make(chan struct{})
+	defer func() {
+		conn.Close()
+		f := Frame{Buffer: getBuffer()}
+		frameHeader(sid, S_STOP, 0, f.Bytes())
+		r.in <- f
+		log.Debug("handleRemoteConn exit, stream: %d", sid)
+	}()
+
+	readFinished := make(chan struct{})
 	go func() {
-		defer func() {
-			conn.Close()
-			close(frame)
-			r.delStream(sid)
-			f := Frame{Buffer: getBuffer()}
-			frameHeader(sid, S_STOP, 0, f.Bytes())
-			r.in <- f
-		}()
+		f := Frame{}
 		for {
-			select {
-			case f, ok := <-frame:
-				if !ok {
-					// conn.Close()
-					// r.delStream(sid)
-					log.Debug("stream %d channel closed", sid)
-					return
-				}
-				streamID := f.StreamID()
-				cmd := f.Cmd()
-				length := f.Length()
-				log.Debug("receive a frame stream %d, cmd %d, length %d", streamID, cmd, length)
-				switch cmd {
-				case S_START, S_TRANS:
-					err := writeBytes(conn, f.Payload())
-					if err != nil {
-						log.Error("conn.Write error:%v", err)
-						conn.CloseWrite()
-						// return
-						goto end
-					}
-				case S_STOP:
-					// conn.Close()
-					// r.delStream(sid)
-					// close(frame)
+			f.Buffer = getBuffer()
+			buf := f.Bytes()
+			n, err := conn.Read(buf[HEADER_SIZE:])
+			if err != nil {
+				log.Error("conn.read error:%v", err)
+				conn.CloseRead()
+				break
+			}
+			log.Debug("read a msg %d bytes", n)
+			frameHeader(sid, S_TRANS, uint16(n), buf)
+			r.in <- f
+			log.Debug("send to tunnel")
+		}
+		readFinished <- struct{}{}
+	}()
+
+	for {
+		select {
+		case f, ok := <-frame:
+			if !ok {
+				log.Debug("stream %d channel closed", sid)
+				return
+			}
+			streamID := f.StreamID()
+			cmd := f.Cmd()
+			length := f.Length()
+			log.Debug("receive a frame stream %d, cmd %d, length %d", streamID, cmd, length)
+			switch cmd {
+			case S_START, S_TRANS:
+				err := writeBytes(conn, f.Payload())
+				if err != nil {
+					log.Error("conn.Write error:%v", err)
 					conn.CloseWrite()
 					goto end
 				}
-				putBuffer(f.Buffer)
+			case S_STOP:
+				conn.CloseWrite()
+				goto end
 			}
+			putBuffer(f.Buffer)
 		}
-	end:
-		writeFinished <- struct{}{}
-	}()
-
-	f := Frame{}
-	for {
-		f.Buffer = getBuffer()
-		buf := f.Bytes()
-		n, err := conn.Read(buf[HEADER_SIZE:])
-		if err != nil {
-			log.Error("conn.read error:%v", err)
-			conn.CloseRead()
-			break
-		}
-		log.Debug("read a msg %d bytes", n)
-		frameHeader(sid, S_TRANS, uint16(n), buf)
-		// log.Debug("header: stream %d, length %d", sid, n)
-		r.in <- f
-		log.Debug("send to tunnel")
 	}
 
-	<-writeFinished
+end:
+	<-readFinished
 }

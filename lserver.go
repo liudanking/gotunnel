@@ -101,6 +101,19 @@ func (ls *LocalServer) tunnel() {
 						log.Error("conn.write error:%v", err)
 						return
 					}
+					switch f.Cmd() {
+					case S_TRANS:
+						ls.publishStream(f)
+					case S_STOP:
+						streamID := f.StreamID()
+						if cf, ok := ls.getStream(streamID); ok {
+							close(cf)
+							ls.delStream(streamID)
+						}
+						log.Debug("stream %d deleted", streamID)
+					default:
+						log.Warn("unknow frame cmd:", f.Cmd())
+					}
 					putBuffer(f.Buffer)
 				}
 			}
@@ -176,8 +189,8 @@ func (ls *LocalServer) publishStream(f Frame) {
 func (ls *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TCPConn) {
 	defer func() {
 		conn.Close()
-		close(frame)
-		ls.delStream(sid)
+		// close(frame)
+		// ls.delStream(sid)
 		f := Frame{Buffer: getBuffer()}
 		frameHeader(sid, S_STOP, 0, f.Bytes())
 		ls.in <- f

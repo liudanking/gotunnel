@@ -116,7 +116,7 @@ func writeBytes(w io.Writer, p []byte) error {
 }
 
 func frameHeader(sid uint16, status byte, length uint16, buf []byte) {
-	if len(buf) < 5 {
+	if len(buf) < HEADER_SIZE {
 		log.Error("buf is too small")
 		return
 	}
