@@ -15,9 +15,6 @@ const (
 	S_STOP  = 0Xff
 )
 
-// type Frame struct {
-// }
-
 type LocalServer struct {
 	laddr *net.TCPAddr
 	raddr *net.TCPAddr
@@ -89,6 +86,7 @@ func (ls *LocalServer) tunnel() {
 			continue
 		}
 		ls.rConn = conn
+		log.Info("tunnel established")
 
 		// receive local packets and send to remote
 		go func() {
@@ -98,7 +96,7 @@ func (ls *LocalServer) tunnel() {
 			for {
 				select {
 				case f := <-ls.in:
-					_, err := writeBytes(ls.rConn, f.Data())
+					err := writeBytes(ls.rConn, f.Data())
 					if err != nil {
 						log.Error("conn.write error:%v", err)
 						return
@@ -121,7 +119,6 @@ func (ls *LocalServer) tunnel() {
 				}
 				break
 			}
-
 			// publish to stream
 			ls.publishStream(f)
 		}
@@ -164,7 +161,7 @@ func (ls *LocalServer) publishStream(f Frame) {
 	defer func() {
 		putBuffer(f.Buffer)
 		if err := recover(); err != nil {
-			// this happens write on closed channel cf
+			// this happens when write on closed channel cf
 			log.Error("panic in publishStream:%v", err)
 		}
 	}()
@@ -176,31 +173,34 @@ func (ls *LocalServer) publishStream(f Frame) {
 	}
 }
 
-func (t *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TCPConn) {
+func (ls *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TCPConn) {
 	defer func() {
-		f := Frame{Buffer: getBuffer()}
 		conn.Close()
 		close(frame)
-		t.delStream(sid)
+		ls.delStream(sid)
+		f := Frame{Buffer: getBuffer()}
 		frameHeader(sid, S_STOP, 0, f.Bytes())
-		t.in <- f
+		ls.in <- f
 		log.Debug("handleLocalConn exit, stream: %d", sid)
 	}()
 
 	// TODO: send heartbeat
 
 	// trans local to remote
+	readFinished := make(chan struct{})
 	go func() {
 		firstMsg := true
 		f := Frame{}
 		for {
 			f.Buffer = getBuffer()
 			buf := f.Bytes()
-			n, err := conn.Read(buf[5:])
+			n, err := conn.Read(buf[HEADER_SIZE:])
 			if err != nil {
+				// if err != io.EOF {
 				log.Info("conn.Read error:%v", err)
+				// }
 				conn.CloseRead()
-				return
+				break
 			} else {
 				if firstMsg {
 					frameHeader(sid, S_START, uint16(n), buf)
@@ -210,9 +210,9 @@ func (t *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TC
 				}
 			}
 			log.Info("read %d bytes", n)
-			// send to LocalServer
-			t.in <- f
+			ls.in <- f
 		}
+		readFinished <- struct{}{}
 	}()
 
 	// trans remote to local
@@ -220,26 +220,26 @@ func (t *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TC
 		select {
 		case f, ok := <-frame:
 			if !ok {
-				log.Info("channel closed")
+				log.Info("stream %d channel closed", sid)
 				return
 			}
-			length := f.Length()
-			log.Debug("receive a frame, %d bytes", length)
+			log.Debug("receive a frame, %d bytes", f.Length())
+
 			switch f.Cmd() {
 			case S_START, S_TRANS:
-				n, err := conn.Write(f.Payload())
+				err := writeBytes(conn, f.Payload())
 				if err != nil {
 					log.Error("write remote to local error:%v", err)
 					conn.CloseWrite()
-					return
-				}
-				if n != int(length) {
-					log.Warn("data length:%d, write length:%d", length, n)
-					return
+					goto end
 				}
 			case S_STOP:
-				return
+				conn.CloseWrite()
+				goto end
 			}
 		}
 	}
+
+end:
+	<-readFinished
 }

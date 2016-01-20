@@ -19,6 +19,7 @@ func main() {
 	// 		log.Error("pprof error:%v", err)
 	// 	}
 	// }()
+	log.AddFilter("stdout", log.DEBUG, log.NewConsoleLogWriter())
 
 	switch *mode {
 	case "local":
