@@ -95,8 +95,8 @@ func (r *RemoteServer) handleConn(conn *net.TCPConn) {
 				c, err := net.DialTCP("tcp", nil, r.raddr)
 				if err != nil {
 					log.Error("net.DialTCP(%s) error:%v", r.raddr.String(), err)
-					buf := make([]byte, 5)
-					frameHeader(streamID, S_STOP, 0, buf)
+					f.Buffer = getBuffer()
+					frameHeader(streamID, S_STOP, 0, f.Bytes())
 					r.in <- f
 					continue
 				}
@@ -122,6 +122,9 @@ func (r *RemoteServer) handleConn(conn *net.TCPConn) {
 		select {
 		case f := <-r.in:
 			// log.Debug("r.in")
+			if f.StreamID() > 100 {
+				log.Warn("debug streamID %d, header:", f.StreamID(), f.Data()[:HEADER_SIZE])
+			}
 			err := writeBytes(conn, f.Data())
 			if err != nil {
 				log.Error("conn.Write error:%v", err)

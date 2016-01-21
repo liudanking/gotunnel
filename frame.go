@@ -63,6 +63,11 @@ func readFrame(r io.Reader, f *Frame) error {
 		return err
 	}
 
+	if f.StreamID() > 100 || f.Length() > 8192 {
+		log.Warn("[1/2] read a frame: stream %d, cmd:%d, length:%d", f.StreamID(), f.Cmd(), f.Length())
+		log.Warn("[2/2] read a frame, header:%v", buf[:5+20])
+	}
+
 	// log.Debug("[1/2] read a frame: stream %d, cmd:%d, length:%d", f.StreamID(), f.Cmd(), length)
 	// log.Debug("[2/2] read a frame, header:%v %v", f.Bytes()[:5], buf[:5])
 
@@ -88,11 +93,17 @@ func readBytes(r io.Reader, p []byte) error {
 	for nn < length && err == nil {
 		n, err = r.Read(p)
 		if err != nil {
+			log.Warn("readBytes error:%v", err)
 			return err
 		}
 		nn += n
 		p = p[n:]
 	}
+
+	if nn != length {
+		log.Warn("readBytes %d != %d", nn, length)
+	}
+
 	return nil
 }
 
@@ -106,10 +117,15 @@ func writeBytes(w io.Writer, p []byte) error {
 	for nn < length && err == nil {
 		n, err = w.Write(p)
 		if err != nil {
+			log.Warn("writeBytes error:%v", err)
 			return err
 		}
 		nn += n
 		p = p[n:]
+	}
+
+	if nn != length {
+		log.Warn("writeBytes %d != %d", nn, length)
 	}
 
 	return nil
