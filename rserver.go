@@ -113,7 +113,7 @@ func (r *RemoteServer) handleConn(conn *net.TCPConn) {
 					log.Debug("stream %d channel closed", streamID)
 				}
 
-				log.Debug("stream %d deleted", streamID)
+				log.Warn("stream %d deleted", streamID)
 			}
 		}
 	}()
@@ -149,8 +149,8 @@ func (r *RemoteServer) subscribeStream(sid uint16) (f chan Frame) {
 
 func (r *RemoteServer) publishStream(f Frame) {
 	defer func() {
-		putBuffer(f.Buffer)
 		if err := recover(); err != nil {
+			putBuffer(f.Buffer)
 			// this happens when write on closed channel cf
 			log.Error("panic in publishStream:%v", err)
 		}

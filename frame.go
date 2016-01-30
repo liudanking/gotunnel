@@ -2,6 +2,8 @@ package main
 
 import (
 	"io"
+	"os"
+	"time"
 
 	"github.com/liudanking/gotunnel/bytes"
 
@@ -57,7 +59,7 @@ func putBuffer(b *bytes.Buffer) {
 
 func readFrame(r io.Reader, f *Frame) error {
 	buf := f.Bytes()
-	err := readBytes(r, buf[:HEADER_SIZE])
+	_, err := io.ReadFull(r, buf[:HEADER_SIZE])
 	if err != nil {
 		log.Error("read frame header error:%v", err)
 		return err
@@ -65,7 +67,9 @@ func readFrame(r io.Reader, f *Frame) error {
 
 	if f.StreamID() > 100 || f.Length() > 8192 {
 		log.Warn("[1/2] read a frame: stream %d, cmd:%d, length:%d", f.StreamID(), f.Cmd(), f.Length())
-		log.Warn("[2/2] read a frame, header:%v", buf[:5+20])
+		log.Warn("[2/2] read a frame: %v", buf[:BUF_SIZE])
+		time.Sleep(1 * time.Second)
+		os.Exit(1)
 	}
 
 	// log.Debug("[1/2] read a frame: stream %d, cmd:%d, length:%d", f.StreamID(), f.Cmd(), length)
@@ -75,35 +79,11 @@ func readFrame(r io.Reader, f *Frame) error {
 	if length == 0 {
 		return nil
 	}
-	err = readBytes(r, buf[HEADER_SIZE:HEADER_SIZE+length])
+	_, err = io.ReadFull(r, buf[HEADER_SIZE:HEADER_SIZE+length])
 	if err != nil {
 		log.Error("read frame payload error:%v", err)
 		return err
 	}
-	return nil
-}
-
-func readBytes(r io.Reader, p []byte) error {
-	var (
-		nn  int
-		n   int
-		err error
-	)
-	length := len(p)
-	for nn < length && err == nil {
-		n, err = r.Read(p)
-		if err != nil {
-			log.Warn("readBytes error:%v", err)
-			return err
-		}
-		nn += n
-		p = p[n:]
-	}
-
-	if nn != length {
-		log.Warn("readBytes %d != %d", nn, length)
-	}
-
 	return nil
 }
 

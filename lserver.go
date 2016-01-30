@@ -102,7 +102,7 @@ func (ls *LocalServer) tunnel() {
 						return
 					}
 					switch f.Cmd() {
-					case S_TRANS:
+					case S_START, S_TRANS:
 						ls.publishStream(f)
 					case S_STOP:
 						streamID := f.StreamID()
@@ -112,7 +112,7 @@ func (ls *LocalServer) tunnel() {
 						}
 						log.Debug("stream %d deleted", streamID)
 					default:
-						log.Warn("unknow frame cmd:", f.Cmd())
+						log.Warn("unknow frame cmd: %d", f.Cmd())
 					}
 					putBuffer(f.Buffer)
 				}
@@ -172,14 +172,18 @@ func (ls *LocalServer) subscribeStream(sid uint16) (f chan Frame) {
 
 func (ls *LocalServer) publishStream(f Frame) {
 	defer func() {
-		putBuffer(f.Buffer)
 		if err := recover(); err != nil {
+			putBuffer(f.Buffer)
 			// this happens when write on closed channel cf
 			log.Error("panic in publishStream:%v", err)
 		}
 	}()
 	if cf, ok := ls.getStream(f.StreamID()); !ok {
 		log.Warn("stream %d not found", f.StreamID())
+		// telll remote server stop send frame with the stream id
+		frame := Frame{Buffer: getBuffer()}
+		frameHeader(f.StreamID(), S_STOP, 0, frame.Bytes())
+		ls.in <- frame
 		return
 	} else {
 		cf <- f
@@ -207,7 +211,7 @@ func (ls *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.T
 		for {
 			f.Buffer = getBuffer()
 			buf := f.Bytes()
-			n, err := conn.Read(buf[HEADER_SIZE:])
+			n, err := conn.Read(buf[HEADER_SIZE:BUF_SIZE])
 			if err != nil {
 				// if err != io.EOF {
 				log.Info("conn.Read error:%v", err)
