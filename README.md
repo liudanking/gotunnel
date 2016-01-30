@@ -3,15 +3,18 @@ A light weight Multiplexing TCP tunnel written in Go.
 
 
 # Roadmap
-* multiplexing: {stream num, {header, payload}} {2, {2, payload}}
-* cipher: 
+* multiplexing: {stream id, cmd, length, payload}
+* cipher: default TLS with session ticket
 
+# Bug
+* EOF not working
+* history frame stucks new tunnel
 
 # TODO
-* struct Frame --> []byte Frame
-* custom memory pool. Ref goim libs/bytes/buffer.go
+* ~~struct Frame --> []byte Frame~~
+* ~~custom memory pool. Ref goim libs/bytes/buffer.go~~
 * buffered channel for frame
-
+* multi tunnel
 
 # Credits
 

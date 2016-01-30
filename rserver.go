@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"sync"
 
 	log "github.com/liudanking/log4go"
@@ -121,9 +122,9 @@ func (r *RemoteServer) handleConn(conn *net.TCPConn) {
 	for {
 		select {
 		case f := <-r.in:
-			// log.Debug("r.in")
-			if f.StreamID() > 100 {
-				log.Warn("debug streamID %d, header:", f.StreamID(), f.Data()[:HEADER_SIZE])
+			if _, ok := r.getStream(f.StreamID()); !ok {
+				log.Warn("stream %d is deleted, ignore the frame", f.StreamID())
+				continue
 			}
 			err := writeBytes(conn, f.Data())
 			if err != nil {
@@ -180,7 +181,9 @@ func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame cha
 			buf := f.Bytes()
 			n, err := conn.Read(buf[HEADER_SIZE:])
 			if err != nil {
-				log.Error("conn.read error:%v", err)
+				if err != io.EOF {
+					log.Error("conn.read error:%v", err)
+				}
 				conn.CloseRead()
 				break
 			}

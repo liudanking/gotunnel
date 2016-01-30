@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -96,6 +97,9 @@ func (ls *LocalServer) tunnel() {
 			for {
 				select {
 				case f := <-ls.in:
+					if _, ok := ls.getStream(f.StreamID()); !ok {
+						continue
+					}
 					err := writeBytes(ls.rConn, f.Data())
 					if err != nil {
 						log.Error("conn.write error:%v", err)
@@ -103,7 +107,7 @@ func (ls *LocalServer) tunnel() {
 					}
 					switch f.Cmd() {
 					case S_START, S_TRANS:
-						ls.publishStream(f)
+						// do nothing
 					case S_STOP:
 						streamID := f.StreamID()
 						if cf, ok := ls.getStream(streamID); ok {
@@ -119,6 +123,7 @@ func (ls *LocalServer) tunnel() {
 			}
 		}()
 
+		// remote to local
 		f := Frame{}
 		for {
 			f.Buffer = getBuffer()
@@ -173,6 +178,7 @@ func (ls *LocalServer) subscribeStream(sid uint16) (f chan Frame) {
 func (ls *LocalServer) publishStream(f Frame) {
 	defer func() {
 		if err := recover(); err != nil {
+			// when panic happens, put buffer back to avoid possible memory leak
 			putBuffer(f.Buffer)
 			// this happens when write on closed channel cf
 			log.Error("panic in publishStream:%v", err)
@@ -193,8 +199,6 @@ func (ls *LocalServer) publishStream(f Frame) {
 func (ls *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TCPConn) {
 	defer func() {
 		conn.Close()
-		// close(frame)
-		// ls.delStream(sid)
 		f := Frame{Buffer: getBuffer()}
 		frameHeader(sid, S_STOP, 0, f.Bytes())
 		ls.in <- f
@@ -211,11 +215,11 @@ func (ls *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.T
 		for {
 			f.Buffer = getBuffer()
 			buf := f.Bytes()
-			n, err := conn.Read(buf[HEADER_SIZE:BUF_SIZE])
+			n, err := conn.Read(buf[HEADER_SIZE:])
 			if err != nil {
-				// if err != io.EOF {
-				log.Info("conn.Read error:%v", err)
-				// }
+				if err != io.EOF {
+					log.Info("conn.Read error:%v", err)
+				}
 				conn.CloseRead()
 				break
 			} else {
@@ -237,20 +241,23 @@ func (ls *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.T
 		select {
 		case f, ok := <-frame:
 			if !ok {
+				putBuffer(f.Buffer)
 				log.Info("stream %d channel closed", sid)
 				return
 			}
 			log.Debug("receive a frame, %d bytes", f.Length())
-
+			// TODO: change putBuffer implementation
 			switch f.Cmd() {
 			case S_START, S_TRANS:
 				err := writeBytes(conn, f.Payload())
+				putBuffer(f.Buffer)
 				if err != nil {
 					log.Error("write remote to local error:%v", err)
 					conn.CloseWrite()
 					goto end
 				}
 			case S_STOP:
+				putBuffer(f.Buffer)
 				conn.CloseWrite()
 				goto end
 			}

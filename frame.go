@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	HEADER_SIZE = 5
-	BUF_SIZE    = HEADER_SIZE + 8192
-	BUF_NUM     = 1024
+	HEADER_SIZE  = 5
+	PAYLOAD_SIZE = 8192
+	BUF_SIZE     = HEADER_SIZE + PAYLOAD_SIZE
+	BUF_NUM      = 1024
 )
 
 type Frame struct {

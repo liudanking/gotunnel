@@ -2,6 +2,8 @@ package bytes
 
 import (
 	"sync"
+
+	log "github.com/liudanking/log4go"
 )
 
 type Buffer struct {
@@ -46,6 +48,7 @@ func (p *Pool) init(num, size int) {
 
 // grow grow the memory buffer size, and update free pointer.
 func (p *Pool) grow() {
+	log.Info("buffer grow")
 	var (
 		i   int
 		b   *Buffer
