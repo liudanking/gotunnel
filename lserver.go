@@ -9,19 +9,11 @@ import (
 )
 
 const (
-	BUF_SIZE = 8192
-	S_START  = 0x01
-	S_TRANS  = 0x02
-	S_HEART  = 0Xfe
-	S_STOP   = 0Xff
+	S_START = 0x01
+	S_TRANS = 0x02
+	S_HEART = 0Xfe
+	S_STOP  = 0Xff
 )
-
-type Frame struct {
-	StreamID uint16
-	Cmd      uint8
-	Length   uint16
-	Payload  []byte
-}
 
 type LocalServer struct {
 	laddr *net.TCPAddr
@@ -32,7 +24,8 @@ type LocalServer struct {
 	streamMutex  *sync.Mutex
 	streams      map[uint16]chan Frame
 	streamMapMtx *sync.Mutex
-	in           chan []byte
+	// in           chan []byte
+	in chan Frame
 }
 
 func NewLocalServer(laddr, raddr string) (*LocalServer, error) {
@@ -52,7 +45,7 @@ func NewLocalServer(laddr, raddr string) (*LocalServer, error) {
 		streamMutex:  &sync.Mutex{},
 		streams:      make(map[uint16]chan Frame),
 		streamMapMtx: &sync.Mutex{},
-		in:           make(chan []byte),
+		in:           make(chan Frame), //make(chan []byte),
 	}
 	return ls, nil
 }
@@ -93,6 +86,7 @@ func (ls *LocalServer) tunnel() {
 			continue
 		}
 		ls.rConn = conn
+		log.Info("tunnel established")
 
 		// receive local packets and send to remote
 		go func() {
@@ -101,19 +95,34 @@ func (ls *LocalServer) tunnel() {
 			}()
 			for {
 				select {
-				case data := <-ls.in:
-					_, err := writeBytes(ls.rConn, data)
+				case f := <-ls.in:
+					err := writeBytes(ls.rConn, f.Data())
 					if err != nil {
 						log.Error("conn.write error:%v", err)
 						return
 					}
+					switch f.Cmd() {
+					case S_START, S_TRANS:
+						ls.publishStream(f)
+					case S_STOP:
+						streamID := f.StreamID()
+						if cf, ok := ls.getStream(streamID); ok {
+							close(cf)
+							ls.delStream(streamID)
+						}
+						log.Debug("stream %d deleted", streamID)
+					default:
+						log.Warn("unknow frame cmd: %d", f.Cmd())
+					}
+					putBuffer(f.Buffer)
 				}
 			}
 		}()
 
+		f := Frame{}
 		for {
-			// TODO: use pool
-			f, err := readFrame(ls.rConn)
+			f.Buffer = getBuffer()
+			err := readFrame(ls.rConn, &f)
 			if err != nil {
 				log.Error("rConn read error:%v", err)
 				//  clear
@@ -123,9 +132,8 @@ func (ls *LocalServer) tunnel() {
 				}
 				break
 			}
-
 			// publish to stream
-			ls.publishStream(*f)
+			ls.publishStream(f)
 		}
 	}
 }
@@ -165,42 +173,51 @@ func (ls *LocalServer) subscribeStream(sid uint16) (f chan Frame) {
 func (ls *LocalServer) publishStream(f Frame) {
 	defer func() {
 		if err := recover(); err != nil {
-			// this happens write on closed channel cf
+			putBuffer(f.Buffer)
+			// this happens when write on closed channel cf
 			log.Error("panic in publishStream:%v", err)
 		}
 	}()
-	if cf, ok := ls.getStream(f.StreamID); !ok {
-		log.Warn("stream %d not found", f.StreamID)
+	if cf, ok := ls.getStream(f.StreamID()); !ok {
+		log.Warn("stream %d not found", f.StreamID())
+		// telll remote server stop send frame with the stream id
+		frame := Frame{Buffer: getBuffer()}
+		frameHeader(f.StreamID(), S_STOP, 0, frame.Bytes())
+		ls.in <- frame
 		return
 	} else {
 		cf <- f
 	}
 }
 
-func (t *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TCPConn) {
-	buf := make([]byte, BUF_SIZE)
+func (ls *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TCPConn) {
 	defer func() {
 		conn.Close()
-		close(frame)
-		t.delStream(sid)
-		frameHeader(sid, S_STOP, 0, buf)
-		t.in <- buf[:5]
+		// close(frame)
+		// ls.delStream(sid)
+		f := Frame{Buffer: getBuffer()}
+		frameHeader(sid, S_STOP, 0, f.Bytes())
+		ls.in <- f
 		log.Debug("handleLocalConn exit, stream: %d", sid)
 	}()
 
 	// TODO: send heartbeat
 
 	// trans local to remote
+	readFinished := make(chan struct{})
 	go func() {
 		firstMsg := true
+		f := Frame{}
 		for {
-			// TODO: use pool
-			buf := make([]byte, BUF_SIZE)
-			n, err := conn.Read(buf[5:])
+			f.Buffer = getBuffer()
+			buf := f.Bytes()
+			n, err := conn.Read(buf[HEADER_SIZE:BUF_SIZE])
 			if err != nil {
+				// if err != io.EOF {
 				log.Info("conn.Read error:%v", err)
+				// }
 				conn.CloseRead()
-				return
+				break
 			} else {
 				if firstMsg {
 					frameHeader(sid, S_START, uint16(n), buf)
@@ -210,9 +227,9 @@ func (t *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TC
 				}
 			}
 			log.Info("read %d bytes", n)
-			// send to LocalServer
-			t.in <- buf[:5+n]
+			ls.in <- f
 		}
+		readFinished <- struct{}{}
 	}()
 
 	// trans remote to local
@@ -220,25 +237,26 @@ func (t *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TC
 		select {
 		case f, ok := <-frame:
 			if !ok {
-				log.Info("channel closed")
+				log.Info("stream %d channel closed", sid)
 				return
 			}
-			log.Debug("receive a frame, %d bytes", f.Length)
-			switch f.Cmd {
+			log.Debug("receive a frame, %d bytes", f.Length())
+
+			switch f.Cmd() {
 			case S_START, S_TRANS:
-				n, err := conn.Write(f.Payload)
+				err := writeBytes(conn, f.Payload())
 				if err != nil {
 					log.Error("write remote to local error:%v", err)
 					conn.CloseWrite()
-					return
-				}
-				if n != len(f.Payload) {
-					log.Warn("data length:%d, write length:%d", len(f.Payload), n)
-					return
+					goto end
 				}
 			case S_STOP:
-				return
+				conn.CloseWrite()
+				goto end
 			}
 		}
 	}
+
+end:
+	<-readFinished
 }

@@ -1,59 +1,118 @@
 package main
 
 import (
-	"errors"
 	"io"
+	"os"
+	"time"
+
+	"github.com/liudanking/gotunnel/bytes"
 
 	log "github.com/liudanking/log4go"
 )
 
-func readFrame(r io.Reader) (*Frame, error) {
-	buf := make([]byte, BUF_SIZE)
-	n, err := r.Read(buf[:5])
-	if err != nil {
-		return nil, err
-	}
-	if n != 5 {
-		log.Error("read %d bytes, expect read 5 bytes", n)
-		return nil, errors.New("read frame header error")
-	}
-	f := &Frame{
-		StreamID: uint16(buf[0])<<8 + uint16(buf[1]),
-		Cmd:      buf[2],
-		Length:   uint16(buf[3])<<8 + uint16(buf[4]),
-	}
-	log.Debug("read a frame:%+v", f)
-	if f.Length == 0 {
-		return f, nil
-	}
+const (
+	HEADER_SIZE = 5
+	BUF_SIZE    = HEADER_SIZE + 8192
+	BUF_NUM     = 1024
+)
 
-	n, err = r.Read(buf[:f.Length])
-	if err != nil {
-		log.Error("read eror:%v", err)
-		return nil, err
-	}
-	if n != int(f.Length) {
-		log.Error("read %d bytes, expect read %d bytes", n, f.Length)
-		return nil, errors.New("read frame payload error")
-	}
-	f.Payload = buf[:f.Length]
-	return f, nil
+type Frame struct {
+	*bytes.Buffer
 }
 
-func writeBytes(w io.Writer, p []byte) (int, error) {
-	n, err := w.Write(p)
+func (f *Frame) StreamID() uint16 {
+	buf := f.Bytes()
+	return uint16(buf[0])<<8 + uint16(buf[1])
+}
+
+func (f *Frame) Cmd() byte {
+	return f.Bytes()[2]
+}
+
+func (f *Frame) Length() uint16 {
+	buf := f.Bytes()
+	return uint16(buf[3])<<8 + uint16(buf[4])
+}
+
+func (f *Frame) Payload() []byte {
+	return f.Bytes()[HEADER_SIZE : HEADER_SIZE+f.Length()]
+}
+
+func (f *Frame) Bytes() []byte {
+	buf := f.Buffer.Bytes()
+	return buf[:BUF_SIZE]
+}
+
+func (f *Frame) Data() []byte {
+	return f.Bytes()[:HEADER_SIZE+f.Length()]
+}
+
+var bPool *bytes.Pool = bytes.NewPool(BUF_NUM, BUF_SIZE)
+
+func getBuffer() *bytes.Buffer {
+	return bPool.Get()
+}
+
+func putBuffer(b *bytes.Buffer) {
+	bPool.Put(b)
+}
+
+func readFrame(r io.Reader, f *Frame) error {
+	buf := f.Bytes()
+	_, err := io.ReadFull(r, buf[:HEADER_SIZE])
 	if err != nil {
-		return 0, err
-	}
-	if n != len(p) {
-		log.Warn("write %d bytes, expect %d bytes", n, len(p))
+		log.Error("read frame header error:%v", err)
+		return err
 	}
 
-	return n, nil
+	if f.StreamID() > 100 || f.Length() > 8192 {
+		log.Warn("[1/2] read a frame: stream %d, cmd:%d, length:%d", f.StreamID(), f.Cmd(), f.Length())
+		log.Warn("[2/2] read a frame: %v", buf[:BUF_SIZE])
+		time.Sleep(1 * time.Second)
+		os.Exit(1)
+	}
+
+	// log.Debug("[1/2] read a frame: stream %d, cmd:%d, length:%d", f.StreamID(), f.Cmd(), length)
+	// log.Debug("[2/2] read a frame, header:%v %v", f.Bytes()[:5], buf[:5])
+
+	length := f.Length()
+	if length == 0 {
+		return nil
+	}
+	_, err = io.ReadFull(r, buf[HEADER_SIZE:HEADER_SIZE+length])
+	if err != nil {
+		log.Error("read frame payload error:%v", err)
+		return err
+	}
+	return nil
+}
+
+func writeBytes(w io.Writer, p []byte) error {
+	var (
+		nn  int
+		n   int
+		err error
+	)
+	length := len(p)
+	for nn < length && err == nil {
+		n, err = w.Write(p)
+		if err != nil {
+			log.Warn("writeBytes error:%v", err)
+			return err
+		}
+		nn += n
+		p = p[n:]
+	}
+
+	if nn != length {
+		log.Warn("writeBytes %d != %d", nn, length)
+	}
+
+	return nil
 }
 
 func frameHeader(sid uint16, status byte, length uint16, buf []byte) {
-	if len(buf) < 5 {
+	if len(buf) < HEADER_SIZE {
 		log.Error("buf is too small")
 		return
 	}
