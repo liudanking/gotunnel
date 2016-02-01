@@ -67,7 +67,8 @@ func readFrame(r io.Reader, f *Frame) error {
 	}
 
 	if f.StreamID() > 100 || f.Length() > 8192 {
-		log.Warn("[1/2] read a frame: stream %d, cmd:%d, length:%d", f.StreamID(), f.Cmd(), f.Length())
+		log.Warn("[1/2] read a frame: stream %d, cmd:%d, length:%d",
+			f.StreamID(), f.Cmd(), f.Length())
 		log.Warn("[2/2] read a frame: %v", buf[:BUF_SIZE])
 		time.Sleep(1 * time.Second)
 		os.Exit(1)
@@ -85,6 +86,17 @@ func readFrame(r io.Reader, f *Frame) error {
 		log.Error("read frame payload error:%v", err)
 		return err
 	}
+	return nil
+}
+
+func readToFrame(r io.Reader, f *Frame, sid uint16, status byte) error {
+	buf := f.Bytes()
+	n, err := r.Read(buf[HEADER_SIZE:])
+	if err != nil {
+		log.Warn("readToFrame error:%v", err)
+		return err
+	}
+	frameHeader(sid, status, uint16(n), buf)
 	return nil
 }
 

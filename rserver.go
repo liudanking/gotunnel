@@ -2,11 +2,10 @@ package main
 
 import (
 	"io"
+	"net"
 	"sync"
 
 	log "github.com/liudanking/log4go"
-
-	"net"
 )
 
 type RemoteServer struct {
@@ -105,16 +104,8 @@ func (r *RemoteServer) handleConn(conn *net.TCPConn) {
 				go r.handleRemoteConn(streamID, c, frame)
 				log.Debug("start stream %d", streamID)
 				r.publishStream(f)
-			case S_TRANS:
+			case S_TRANS, S_STOP:
 				r.publishStream(f)
-			case S_STOP:
-				if cf, ok := r.getStream(streamID); ok {
-					close(cf)
-					r.delStream(streamID)
-					log.Debug("stream %d channel closed", streamID)
-				}
-
-				log.Warn("stream %d deleted", streamID)
 			}
 		}
 	}()
@@ -122,10 +113,6 @@ func (r *RemoteServer) handleConn(conn *net.TCPConn) {
 	for {
 		select {
 		case f := <-r.in:
-			if _, ok := r.getStream(f.StreamID()); !ok {
-				log.Warn("stream %d is deleted, ignore the frame", f.StreamID())
-				continue
-			}
 			err := writeBytes(conn, f.Data())
 			if err != nil {
 				log.Error("conn.Write error:%v", err)
@@ -167,11 +154,14 @@ func (r *RemoteServer) publishStream(f Frame) {
 func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame chan Frame) {
 	defer func() {
 		conn.Close()
-		f := Frame{Buffer: getBuffer()}
-		frameHeader(sid, S_STOP, 0, f.Bytes())
-		r.in <- f
+		close(frame)
+		r.delStream(sid)
+		// f := Frame{Buffer: getBuffer()}
+		// frameHeader(sid, S_STOP, 0, f.Bytes())
+		// r.in <- f
 		log.Debug("handleRemoteConn exit, stream: %d", sid)
 	}()
+	log.Debug("arg0")
 
 	readFinished := make(chan struct{})
 	go func() {
@@ -187,7 +177,7 @@ func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame cha
 				conn.CloseRead()
 				break
 			}
-			log.Debug("read a msg %d bytes", n)
+			log.Debug("stream %d read a msg %d bytes", n, sid)
 			frameHeader(sid, S_TRANS, uint16(n), buf)
 			r.in <- f
 			log.Debug("send to tunnel")
@@ -199,6 +189,7 @@ func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame cha
 		select {
 		case f, ok := <-frame:
 			if !ok {
+				putBuffer(f.Buffer)
 				log.Debug("stream %d channel closed", sid)
 				return
 			}
@@ -209,16 +200,17 @@ func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame cha
 			switch cmd {
 			case S_START, S_TRANS:
 				err := writeBytes(conn, f.Payload())
+				putBuffer(f.Buffer)
 				if err != nil {
 					log.Error("conn.Write error:%v", err)
 					conn.CloseWrite()
 					goto end
 				}
 			case S_STOP:
-				conn.CloseWrite()
-				goto end
+				putBuffer(f.Buffer)
+				log.Info("stream %d receive STOP frame", sid)
+				return
 			}
-			putBuffer(f.Buffer)
 		}
 	}
 

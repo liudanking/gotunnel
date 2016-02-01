@@ -97,28 +97,12 @@ func (ls *LocalServer) tunnel() {
 			for {
 				select {
 				case f := <-ls.in:
-					if _, ok := ls.getStream(f.StreamID()); !ok {
-						continue
-					}
 					err := writeBytes(ls.rConn, f.Data())
+					putBuffer(f.Buffer)
 					if err != nil {
 						log.Error("conn.write error:%v", err)
 						return
 					}
-					switch f.Cmd() {
-					case S_START, S_TRANS:
-						// do nothing
-					case S_STOP:
-						streamID := f.StreamID()
-						if cf, ok := ls.getStream(streamID); ok {
-							close(cf)
-							ls.delStream(streamID)
-						}
-						log.Debug("stream %d deleted", streamID)
-					default:
-						log.Warn("unknow frame cmd: %d", f.Cmd())
-					}
-					putBuffer(f.Buffer)
 				}
 			}
 		}()
@@ -190,6 +174,7 @@ func (ls *LocalServer) publishStream(f Frame) {
 		frame := Frame{Buffer: getBuffer()}
 		frameHeader(f.StreamID(), S_STOP, 0, frame.Bytes())
 		ls.in <- frame
+		log.Debug("tell remote to stop %d", f.StreamID())
 		return
 	} else {
 		cf <- f
@@ -199,6 +184,8 @@ func (ls *LocalServer) publishStream(f Frame) {
 func (ls *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TCPConn) {
 	defer func() {
 		conn.Close()
+		close(frame)
+		ls.delStream(sid)
 		f := Frame{Buffer: getBuffer()}
 		frameHeader(sid, S_STOP, 0, f.Bytes())
 		ls.in <- f
@@ -210,30 +197,23 @@ func (ls *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.T
 	// trans local to remote
 	readFinished := make(chan struct{})
 	go func() {
-		firstMsg := true
+		defer func() { readFinished <- struct{}{} }()
+		var err error
+		var status byte = S_START
 		f := Frame{}
-		for {
+		for ; ; status = S_TRANS {
 			f.Buffer = getBuffer()
-			buf := f.Bytes()
-			n, err := conn.Read(buf[HEADER_SIZE:])
+			err = readToFrame(conn, &f, sid, status)
 			if err != nil {
 				if err != io.EOF {
 					log.Info("conn.Read error:%v", err)
 				}
 				conn.CloseRead()
-				break
-			} else {
-				if firstMsg {
-					frameHeader(sid, S_START, uint16(n), buf)
-					firstMsg = false
-				} else {
-					frameHeader(sid, S_TRANS, uint16(n), buf)
-				}
+				return
 			}
-			log.Info("read %d bytes", n)
+			log.Debug("read %d bytes", f.Length())
 			ls.in <- f
 		}
-		readFinished <- struct{}{}
 	}()
 
 	// trans remote to local
@@ -246,7 +226,6 @@ func (ls *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.T
 				return
 			}
 			log.Debug("receive a frame, %d bytes", f.Length())
-			// TODO: change putBuffer implementation
 			switch f.Cmd() {
 			case S_START, S_TRANS:
 				err := writeBytes(conn, f.Payload())
@@ -258,8 +237,7 @@ func (ls *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.T
 				}
 			case S_STOP:
 				putBuffer(f.Buffer)
-				conn.CloseWrite()
-				goto end
+				return
 			}
 		}
 	}
