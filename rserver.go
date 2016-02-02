@@ -152,16 +152,16 @@ func (r *RemoteServer) publishStream(f Frame) {
 }
 
 func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame chan Frame) {
-	defer func() {
-		conn.Close()
-		close(frame)
-		r.delStream(sid)
-		// f := Frame{Buffer: getBuffer()}
-		// frameHeader(sid, S_STOP, 0, f.Bytes())
-		// r.in <- f
-		log.Debug("handleRemoteConn exit, stream: %d", sid)
-	}()
-	log.Debug("arg0")
+	// defer func() {
+	// 	conn.Close()
+	// 	close(frame)
+	// 	r.delStream(sid)
+	// 	// TODO: consider when to send STOP frame
+	// 	// f := Frame{Buffer: getBuffer()}
+	// 	// frameHeader(sid, S_STOP, 0, f.Bytes())
+	// 	// r.in <- f
+	// 	log.Debug("handleRemoteConn exit, stream: %d", sid)
+	// }()
 
 	readFinished := make(chan struct{})
 	go func() {
@@ -185,13 +185,15 @@ func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame cha
 		readFinished <- struct{}{}
 	}()
 
+	sendStop := false
 	for {
 		select {
 		case f, ok := <-frame:
 			if !ok {
 				putBuffer(f.Buffer)
+				conn.Close()
 				log.Debug("stream %d channel closed", sid)
-				return
+				goto end
 			}
 			streamID := f.StreamID()
 			cmd := f.Cmd()
@@ -204,16 +206,24 @@ func (r *RemoteServer) handleRemoteConn(sid uint16, conn *net.TCPConn, frame cha
 				if err != nil {
 					log.Error("conn.Write error:%v", err)
 					conn.CloseWrite()
+					close(frame)
+					r.delStream(sid)
 					goto end
 				}
 			case S_STOP:
 				putBuffer(f.Buffer)
+				conn.Close()
+				close(frame)
+				r.delStream(sid)
 				log.Info("stream %d receive STOP frame", sid)
-				return
+				goto end
 			}
 		}
 	}
 
 end:
 	<-readFinished
+	if sendStop {
+		r.in <- stopFrame(sid)
+	}
 }

@@ -135,3 +135,9 @@ func frameHeader(sid uint16, status byte, length uint16, buf []byte) {
 	buf[3] = byte(length >> 8)
 	buf[4] = byte(length & 0x00ff)
 }
+
+func stopFrame(sid uint16) Frame {
+	f := Frame{Buffer: getBuffer()}
+	frameHeader(sid, S_STOP, 0, f.Bytes())
+	return f
+}

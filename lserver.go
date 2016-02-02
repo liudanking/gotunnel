@@ -25,8 +25,7 @@ type LocalServer struct {
 	streamMutex  *sync.Mutex
 	streams      map[uint16]chan Frame
 	streamMapMtx *sync.Mutex
-	// in           chan []byte
-	in chan Frame
+	in           chan Frame
 }
 
 func NewLocalServer(laddr, raddr string) (*LocalServer, error) {
@@ -115,10 +114,12 @@ func (ls *LocalServer) tunnel() {
 			if err != nil {
 				log.Error("rConn read error:%v", err)
 				//  clear
+				ls.streamMapMtx.Lock()
 				for k, v := range ls.streams {
-					close(v)
+					close(v) // notify connectioin exit
 					delete(ls.streams, k)
 				}
+				ls.streamMapMtx.Unlock()
 				break
 			}
 			// publish to stream
@@ -182,22 +183,26 @@ func (ls *LocalServer) publishStream(f Frame) {
 }
 
 func (ls *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.TCPConn) {
-	defer func() {
-		conn.Close()
-		close(frame)
-		ls.delStream(sid)
-		f := Frame{Buffer: getBuffer()}
-		frameHeader(sid, S_STOP, 0, f.Bytes())
-		ls.in <- f
-		log.Debug("handleLocalConn exit, stream: %d", sid)
-	}()
+	// defer func() {
+	// 	conn.Close()
+	// 	close(frame)
+	// 	ls.delStream(sid)
+	// 	f := Frame{Buffer: getBuffer()}
+	// 	frameHeader(sid, S_STOP, 0, f.Bytes())
+	// 	ls.in <- f
+	// 	log.Debug("handleLocalConn exit, stream: %d", sid)
+	// }()
 
 	// TODO: send heartbeat
 
 	// trans local to remote
 	readFinished := make(chan struct{})
 	go func() {
-		defer func() { readFinished <- struct{}{} }()
+		defer func() {
+			readFinished <- struct{}{}
+			// TODO
+			recover()
+		}()
 		var err error
 		var status byte = S_START
 		f := Frame{}
@@ -217,13 +222,15 @@ func (ls *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.T
 	}()
 
 	// trans remote to local
+	sendStop := false
 	for {
 		select {
 		case f, ok := <-frame:
-			if !ok {
+			if !ok { // tunnel is closed
 				putBuffer(f.Buffer)
+				conn.Close()
 				log.Info("stream %d channel closed", sid)
-				return
+				goto end
 			}
 			log.Debug("receive a frame, %d bytes", f.Length())
 			switch f.Cmd() {
@@ -233,15 +240,24 @@ func (ls *LocalServer) handleLocalConn(sid uint16, frame chan Frame, conn *net.T
 				if err != nil {
 					log.Error("write remote to local error:%v", err)
 					conn.CloseWrite()
+					close(frame)
+					ls.delStream(sid)
+					sendStop = true
 					goto end
 				}
 			case S_STOP:
 				putBuffer(f.Buffer)
-				return
+				conn.Close()
+				close(frame)
+				ls.delStream(sid)
+				goto end
 			}
 		}
 	}
 
 end:
 	<-readFinished
+	if sendStop {
+		ls.in <- stopFrame(sid)
+	}
 }
