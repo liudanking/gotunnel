@@ -26,7 +26,7 @@ func main() {
 			log.Error("pprof error:%v", err)
 		}
 	}()
-	log.AddFilter("stdout", log.INFO, log.NewConsoleLogWriter())
+	log.AddFilter("stdout", log.DEBUG, log.NewConsoleLogWriter())
 
 	switch *mode {
 	case "local":
@@ -35,14 +35,14 @@ func main() {
 			log.Error("NewLocalServer error:%v", err)
 			return
 		}
-		localServer.serve()
+		localServer.Serve()
 	case "remote":
 		remoteServer, err := NewRemoteServer(*laddr, *raddr)
 		if err != nil {
 			log.Error("NewRemoteServer error:%v", err)
 			return
 		}
-		remoteServer.serve()
+		remoteServer.Serve()
 	}
 
 	log.Info("exit")
