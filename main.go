@@ -43,14 +43,14 @@ func main() {
 		localServer, err := NewLocalServer(*laddr, *raddr, *tcount)
 		if err != nil {
 			log.Error("NewLocalServer error:%v", err)
-			return
+			break
 		}
 		localServer.Serve()
 	case "remote":
 		remoteServer, err := NewRemoteServer(*laddr, *raddr)
 		if err != nil {
 			log.Error("NewRemoteServer error:%v", err)
-			return
+			break
 		}
 		remoteServer.Serve(*cert, *key)
 	}
