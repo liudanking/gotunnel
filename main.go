@@ -8,10 +8,13 @@ import (
 	log "github.com/liudanking/log4go"
 )
 
+var DEBUG bool
+
 func main() {
 	mode := flag.String("m", "local", "mode: local or remote")
 	laddr := flag.String("l", "127.0.0.1:9000", "local address")
 	raddr := flag.String("r", "127.0.0.1:9001", "remote address")
+	flag.BoolVar(&DEBUG, "d", false, "debug mode")
 	flag.Parse()
 
 	go func() {
@@ -26,11 +29,15 @@ func main() {
 			log.Error("pprof error:%v", err)
 		}
 	}()
-	log.AddFilter("stdout", log.DEBUG, log.NewConsoleLogWriter())
+	if DEBUG {
+		log.AddFilter("stdout", log.DEBUG, log.NewConsoleLogWriter())
+	} else {
+		log.AddFilter("stdout", log.INFO, log.NewConsoleLogWriter())
+	}
 
 	switch *mode {
 	case "local":
-		localServer, err := NewLocalServer(*laddr, *raddr)
+		localServer, err := NewLocalServer(*laddr, *raddr, 1)
 		if err != nil {
 			log.Error("NewLocalServer error:%v", err)
 			return
@@ -42,7 +49,8 @@ func main() {
 			log.Error("NewRemoteServer error:%v", err)
 			return
 		}
-		remoteServer.Serve()
+		remoteServer.Serve("/Users/liudanking/Documents/config/ssh-key/ngg/star_cert.pem",
+			"/Users/liudanking/Documents/config/ssh-key/ngg/star_618033988_cc.key")
 	}
 
 	log.Info("exit")

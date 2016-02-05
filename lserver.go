@@ -1,8 +1,9 @@
 package main
 
 import (
-	"io"
+	"crypto/tls"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -19,14 +20,15 @@ const (
 )
 
 type LocalServer struct {
-	laddr *net.TCPAddr
-	raddr *net.TCPAddr
-	// remote connection, only used in local mode
-	tunnel      *yamux.Session
+	laddr       *net.TCPAddr
+	raddr       *net.TCPAddr
+	tunnelCount int
+	tunnels     []*yamux.Session
+	tunnelsMtx  []sync.Mutex
 	streamCount int32
 }
 
-func NewLocalServer(laddr, raddr string) (*LocalServer, error) {
+func NewLocalServer(laddr, raddr string, tunnelCount int) (*LocalServer, error) {
 	_laddr, err := net.ResolveTCPAddr("tcp", laddr)
 	if err != nil {
 		return nil, err
@@ -36,22 +38,22 @@ func NewLocalServer(laddr, raddr string) (*LocalServer, error) {
 		return nil, err
 	}
 
-	conn, err := net.DialTCP("tcp", nil, _raddr)
-	if err != nil {
-		log.Error("dial remote [%s] error:%v", _raddr.String(), err)
-		return nil, err
-	}
-	// TODO: config client
-	session, err := yamux.Client(conn, nil)
-	if err != nil {
-		log.Error("create yamux client error:%v", err)
-		return nil, err
+	tunnels := make([]*yamux.Session, tunnelCount)
+	for i := 0; i < tunnelCount; i++ {
+		tunnel, err := createTunnel(_raddr)
+		if err != nil {
+			log.Error("create yamux client error:%v", err)
+			return nil, err
+		}
+		tunnels[i] = tunnel
 	}
 
 	ls := &LocalServer{
 		laddr:       _laddr,
 		raddr:       _raddr,
-		tunnel:      session,
+		tunnelCount: tunnelCount,
+		tunnels:     tunnels,
+		tunnelsMtx:  make([]sync.Mutex, tunnelCount),
 		streamCount: 0,
 	}
 	return ls, nil
@@ -75,33 +77,116 @@ func (ls *LocalServer) Serve() {
 }
 
 func (ls *LocalServer) transport(conn *net.TCPConn) {
+	defer conn.Close()
 	start := time.Now()
-	stream, err := ls.tunnel.OpenStream()
+	stream, err := ls.openStream(conn)
 	if err != nil {
 		log.Error("open stream for %s error:%v", conn.RemoteAddr().String(), err)
-		conn.Close()
 		return
 	}
+	defer stream.Close()
+
 	atomic.AddInt32(&ls.streamCount, 1)
 	streamID := stream.StreamID()
-	writeChan := make(chan int64)
-	go func() {
-		n, err := io.Copy(stream, conn)
-		if err != nil {
-			log.Warn("copy conn to stream #%d error:%v", streamID, err)
+	readChan := make(chan int64, 1)
+	writeChan := make(chan int64, 1)
+	var readBytes int64
+	var writeBytes int64
+	go pipe(conn, stream, readChan)
+	go pipe(stream, conn, writeChan)
+	for i := 0; i < 2; i++ {
+		select {
+		case readBytes = <-readChan:
+			// DON'T call conn.Close, it will trigger an error in pipe.
+			// Just close stream, let the conn copy finished normally
+			// conn.Close()
+			log.Debug("[#%d] read %d bytes", streamID, readBytes)
+		case writeBytes = <-writeChan:
+			stream.Close()
+			log.Debug("[#%d] write %d bytes", streamID, writeBytes)
 		}
-		conn.CloseRead()
-		writeChan <- n
-	}()
-
-	n, err := io.Copy(conn, stream)
-	if err != nil {
-		log.Warn("copy stream #%d to conn error:%v", streamID, err)
 	}
-	writeBytes := <-writeChan
-	stream.Close()
-	conn.CloseWrite()
-	log.Info("stream #%d r:%d w:%d ct:%v c:%d",
-		streamID, n, writeBytes, time.Now().Sub(start), atomic.LoadInt32(&ls.streamCount))
+	log.Info("[#%d] r:%d w:%d t:%v c:%d",
+		streamID, readBytes, writeBytes, time.Now().Sub(start), atomic.LoadInt32(&ls.streamCount))
 	atomic.AddInt32(&ls.streamCount, -1)
+}
+
+func (ls *LocalServer) openStream(conn net.Conn) (stream *yamux.Stream, err error) {
+	h, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+	idx := ip2int(net.ParseIP(h)) % ls.tunnelCount
+
+	ls.tunnelsMtx[idx].Lock()
+	defer ls.tunnelsMtx[idx].Unlock()
+	stream, err = ls.tunnels[idx].OpenStream()
+	if err != nil {
+		if err == yamux.ErrStreamsExhausted || err == yamux.ErrSessionShutdown {
+			log.Warn("[1/3]tunnel stream [%v]. [%s] to [%s], NumStreams:%d",
+				err,
+				ls.tunnels[idx].RemoteAddr().String(),
+				ls.tunnels[idx].LocalAddr().String(),
+				ls.tunnels[idx].NumStreams())
+			tunnel, err := createTunnel(ls.raddr)
+			if err != nil {
+				log.Error("[2/3]try to create new tunnel error:%v", err)
+				return nil, err
+			} else {
+				log.Warn("[2/3]create new tunnel OK")
+			}
+			stream, err = tunnel.OpenStream()
+			if err != nil {
+				log.Error("[3/3]open Stream from new tunnel error:%v", err)
+				return nil, err
+			} else {
+				log.Warn("[3/3]open Stream from new tunnel OK")
+				go ls.serveTunnel(ls.tunnels[idx])
+				ls.tunnels[idx] = tunnel
+				return stream, nil
+			}
+		} else {
+			log.Error("openStream error:%v", err)
+		}
+	}
+
+	return stream, err
+}
+
+func (ls *LocalServer) serveTunnel(tunnel *yamux.Session) {
+	for {
+		if tunnel.IsClosed() || tunnel.NumStreams() == 0 {
+			log.Warn("[1/2]tunnel colsed:%v, NumStreams:%d, exiting...", tunnel.IsClosed(), tunnel.NumStreams())
+			tunnel.Close()
+			log.Warn("[2/2]tunnel exit")
+			return
+		}
+		time.Sleep(10 * time.Second)
+	}
+}
+
+func createTunnel(raddr *net.TCPAddr) (*yamux.Session, error) {
+	config := tls.Config{
+		// RootCAs:            agent.RootCAs,
+		InsecureSkipVerify: DEBUG,
+		// ServerName:         CERT_CN,
+		ClientSessionCache: tls.NewLRUClientSessionCache(32), // use sessoin ticket to speed up tls handshake
+	}
+	conn, err := tls.Dial("tcp", raddr.String(), &config)
+	if err != nil {
+		return nil, err
+	}
+	// TODO: config client
+	return yamux.Client(conn, nil)
+}
+
+func ip2int(ip net.IP) int {
+	if ip == nil {
+		return 0
+	}
+	ip = ip.To4()
+
+	var ipInt int
+	ipInt += int(ip[0]) << 24
+	ipInt += int(ip[1]) << 16
+	ipInt += int(ip[2]) << 8
+	ipInt += int(ip[3])
+	return ipInt
 }

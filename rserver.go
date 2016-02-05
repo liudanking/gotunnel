@@ -1,7 +1,7 @@
 package main
 
 import (
-	"io"
+	"crypto/tls"
 	"net"
 	"sync/atomic"
 	"time"
@@ -35,20 +35,27 @@ func NewRemoteServer(laddr, raddr string) (*RemoteServer, error) {
 	return rs, nil
 }
 
-func (rs *RemoteServer) Serve() {
-	l, err := net.ListenTCP("tcp", rs.laddr)
+func (rs *RemoteServer) Serve(certFile, keyFile string) {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		log.Error("load cert/key error:%v", err)
+		return
+	}
+	config := tls.Config{Certificates: []tls.Certificate{cert}}
+	// TODO: config
+	l, err := tls.Listen("tcp", rs.laddr.String(), &config)
 	if err != nil {
 		log.Error("net.ListenTCP(%s) error:%v", rs.laddr.String(), err)
 		return
 	}
 
 	for {
-		conn, err := l.AcceptTCP()
+		conn, err := l.Accept()
 		if err != nil {
 			log.Error("listenner accept connection error:%v", err)
 			continue
 		}
-		log.Debug("accept a connection:%s", conn.RemoteAddr().String())
+		log.Info("accept a tunnel connection:%s", conn.RemoteAddr().String())
 		// TODO: set config
 		session, err := yamux.Server(conn, nil)
 		if err != nil {
@@ -63,6 +70,7 @@ func (rs *RemoteServer) handleTunnel(tunnel *yamux.Session) {
 	for {
 		stream, err := tunnel.AcceptStream()
 		if err != nil {
+			tunnel.Close()
 			log.Error("accept stream error:%v", err)
 			return
 		}
@@ -71,34 +79,37 @@ func (rs *RemoteServer) handleTunnel(tunnel *yamux.Session) {
 }
 
 func (rs *RemoteServer) serveStream(stream *yamux.Stream) {
+	defer stream.Close()
 	start := time.Now()
 	conn, err := net.DialTCP("tcp", nil, rs.raddr)
 	if err != nil {
 		log.Error("connect to remote error:%v", err)
 		return
 	}
-	log.Debug("data transfer")
+	defer conn.Close()
+	log.Debug("stream #%d data transfer", stream.StreamID())
 
 	atomic.AddInt32(&rs.streamCount, 1)
 	streamID := stream.StreamID()
-	writeChan := make(chan int64)
-	go func() {
-		n, err := io.Copy(conn, stream)
-		if err != nil {
-			log.Warn("copy conn to stream #%d error:%v", streamID, err)
+	readChan := make(chan int64, 1)
+	writeChan := make(chan int64, 1)
+	var readBytes int64
+	var writeBytes int64
+	go pipe(stream, conn, readChan)
+	go pipe(conn, stream, writeChan)
+	for i := 0; i < 2; i++ {
+		select {
+		case readBytes = <-readChan:
+			stream.Close()
+			log.Debug("[#%d] read %d bytes", streamID, readBytes)
+		case writeBytes = <-writeChan:
+			// DON'T call conn.Close, it will trigger an error in pipe.
+			// Just close stream, let the conn copy finished normally
+			// conn.Close()
+			log.Debug("[#%d] write %d bytes", streamID, writeBytes)
 		}
-		conn.CloseRead()
-		writeChan <- n
-	}()
-
-	n, err := io.Copy(stream, conn)
-	if err != nil {
-		log.Warn("copy stream #%d to conn error:%v", streamID, err)
 	}
-	writeBytes := <-writeChan
-	conn.CloseWrite()
-	stream.Close()
-	log.Info("stream #%d r:%d w:%d ct:%v c:%d",
-		streamID, n, writeBytes, time.Now().Sub(start), atomic.LoadInt32(&rs.streamCount))
+	log.Info("[#%d] r:%d w:%d t:%v c:%d",
+		streamID, readBytes, writeBytes, time.Now().Sub(start), atomic.LoadInt32(&rs.streamCount))
 	atomic.AddInt32(&rs.streamCount, -1)
 }
