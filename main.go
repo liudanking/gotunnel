@@ -16,6 +16,7 @@ func main() {
 	laddr := flag.String("l", "127.0.0.1:9000", "local address")
 	raddr := flag.String("r", "127.0.0.1:9001", "remote address")
 	cert := flag.String("c", "", "certificate")
+	tcount := flag.Int("t", 1, "tunnel count")
 	key := flag.String("k", "", "private key")
 	flag.Parse()
 
@@ -39,7 +40,7 @@ func main() {
 
 	switch *mode {
 	case "local":
-		localServer, err := NewLocalServer(*laddr, *raddr, 1)
+		localServer, err := NewLocalServer(*laddr, *raddr, *tcount)
 		if err != nil {
 			log.Error("NewLocalServer error:%v", err)
 			return
