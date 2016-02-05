@@ -191,6 +191,8 @@ MTh89N1SyvNTBCVXVmaU6Avu5gMUTu79bZRknl7OedSyps9AsUSoPocZXun4IRZZUw==
 -----END CERTIFICATE-----
 `
 
+const CERT_SN = "618033988.cc"
+
 func createTunnel(raddr *net.TCPAddr) (*yamux.Session, error) {
 	roots := x509.NewCertPool()
 	ok := roots.AppendCertsFromPEM([]byte(ROOTCA))
@@ -198,9 +200,9 @@ func createTunnel(raddr *net.TCPAddr) (*yamux.Session, error) {
 		log.Error("failed to parse root certificate")
 	}
 	config := tls.Config{
-		// RootCAs: roots,
-		// InsecureSkipVerify: DEBUG,
-		ServerName:         "618033988.cc",
+		RootCAs:            roots,
+		InsecureSkipVerify: DEBUG,
+		// ServerName:         CERT_SN,
 		ClientSessionCache: tls.NewLRUClientSessionCache(32), // use sessoin ticket to speed up tls handshake
 	}
 	conn, err := tls.Dial("tcp", raddr.String(), &config)
