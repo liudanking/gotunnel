@@ -15,9 +15,9 @@ func main() {
 	mode := flag.String("m", "local", "mode: local or remote")
 	laddr := flag.String("l", "127.0.0.1:9000", "local address")
 	raddr := flag.String("r", "127.0.0.1:9001", "remote address")
-	cert := flag.String("c", "", "certificate")
-	tcount := flag.Int("t", 1, "tunnel count")
-	key := flag.String("k", "", "private key")
+	cert := flag.String("c", "", "certificate (remote)")
+	key := flag.String("k", "", "private key (remote)")
+	tcount := flag.Int("t", 1, "tunnel count (local)")
 	flag.Parse()
 
 	// go func() {
