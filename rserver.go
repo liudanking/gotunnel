@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hashicorp/yamux"
+	"github.com/liudanking/yamux"
 
 	log "github.com/liudanking/log4go"
 )
