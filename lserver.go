@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hashicorp/yamux"
+	yamux "github.com/inconshreveable/muxado"
 
 	log "github.com/liudanking/log4go"
 )
@@ -23,13 +23,13 @@ type LocalServer struct {
 	laddr       string
 	raddr       string
 	tunnelCount int
-	tunnels     []*yamux.Session
+	tunnels     []yamux.Session
 	tunnelsMtx  []sync.Mutex
 	streamCount int32
 }
 
 func NewLocalServer(laddr, raddr string, tunnelCount int) (*LocalServer, error) {
-	tunnels := make([]*yamux.Session, tunnelCount)
+	tunnels := make([]yamux.Session, tunnelCount)
 	for i := 0; i < tunnelCount; i++ {
 		tunnel, err := createTunnel(raddr)
 		if err != nil {
@@ -78,7 +78,7 @@ func (ls *LocalServer) transport(conn net.Conn) {
 	defer stream.Close()
 
 	atomic.AddInt32(&ls.streamCount, 1)
-	streamID := stream.StreamID()
+	streamID := stream.Id()
 	readChan := make(chan int64, 1)
 	writeChan := make(chan int64, 1)
 	var readBytes int64
@@ -102,7 +102,7 @@ func (ls *LocalServer) transport(conn net.Conn) {
 	atomic.AddInt32(&ls.streamCount, -1)
 }
 
-func (ls *LocalServer) openStream(conn net.Conn) (stream *yamux.Stream, err error) {
+func (ls *LocalServer) openStream(conn net.Conn) (stream yamux.Stream, err error) {
 	// h, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
 	// idx := ip2int(net.ParseIP(h)) % ls.tunnelCount
 	idx := rand.Intn(ls.tunnelCount) % ls.tunnelCount
@@ -111,12 +111,12 @@ func (ls *LocalServer) openStream(conn net.Conn) (stream *yamux.Stream, err erro
 	defer ls.tunnelsMtx[idx].Unlock()
 	stream, err = ls.tunnels[idx].OpenStream()
 	if err != nil {
-		if err == yamux.ErrStreamsExhausted || err == yamux.ErrSessionShutdown {
-			log.Warn("[1/3]tunnel stream [%v]. [%s] to [%s], NumStreams:%d",
-				err,
-				ls.tunnels[idx].RemoteAddr().String(),
-				ls.tunnels[idx].LocalAddr().String(),
-				ls.tunnels[idx].NumStreams())
+		if true {
+			// log.Warn("[1/3]tunnel stream [%v]. [%s] to [%s], NumStreams:%d",
+			// 	err,
+			// 	ls.tunnels[idx].RemoteAddr().String(),
+			// 	ls.tunnels[idx].LocalAddr().String(),
+			// 	ls.tunnels[idx].NumStreams())
 			tunnel, err := createTunnel(ls.raddr)
 			if err != nil {
 				log.Error("[2/3]try to create new tunnel error:%v", err)
@@ -142,16 +142,16 @@ func (ls *LocalServer) openStream(conn net.Conn) (stream *yamux.Stream, err erro
 	return stream, err
 }
 
-func (ls *LocalServer) serveTunnel(tunnel *yamux.Session) {
-	for {
-		if tunnel.IsClosed() || tunnel.NumStreams() == 0 {
-			log.Warn("[1/2]tunnel colsed:%v, NumStreams:%d, exiting...", tunnel.IsClosed(), tunnel.NumStreams())
-			tunnel.Close()
-			log.Warn("[2/2]tunnel exit")
-			return
-		}
-		time.Sleep(10 * time.Second)
-	}
+func (ls *LocalServer) serveTunnel(tunnel yamux.Session) {
+	// for {
+	// 	if tunnel.IsClosed() || tunnel.NumStreams() == 0 {
+	// 		log.Warn("[1/2]tunnel colsed:%v, NumStreams:%d, exiting...", tunnel.IsClosed(), tunnel.NumStreams())
+	// 		tunnel.Close()
+	// 		log.Warn("[2/2]tunnel exit")
+	// 		return
+	// 	}
+	// 	time.Sleep(10 * time.Second)
+	// }
 }
 
 func ip2int(ip net.IP) int {

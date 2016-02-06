@@ -6,8 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hashicorp/yamux"
-
+	yamux "github.com/inconshreveable/muxado"
 	log "github.com/liudanking/log4go"
 )
 
@@ -57,7 +56,7 @@ func (rs *RemoteServer) Serve(certFile, keyFile string) {
 		}
 		log.Info("accept a tunnel connection:%s", conn.RemoteAddr().String())
 		// TODO: set config
-		session, err := yamux.Server(conn, nil)
+		session := yamux.Server(conn, nil)
 		if err != nil {
 			log.Error("create yamux server error:%v", err)
 			continue
@@ -66,7 +65,7 @@ func (rs *RemoteServer) Serve(certFile, keyFile string) {
 	}
 }
 
-func (rs *RemoteServer) handleTunnel(tunnel *yamux.Session) {
+func (rs *RemoteServer) handleTunnel(tunnel yamux.Session) {
 	for {
 		stream, err := tunnel.AcceptStream()
 		if err != nil {
@@ -78,7 +77,7 @@ func (rs *RemoteServer) handleTunnel(tunnel *yamux.Session) {
 	}
 }
 
-func (rs *RemoteServer) serveStream(stream *yamux.Stream) {
+func (rs *RemoteServer) serveStream(stream yamux.Stream) {
 	defer stream.Close()
 	start := time.Now()
 	conn, err := net.DialTCP("tcp", nil, rs.raddr)
@@ -87,10 +86,10 @@ func (rs *RemoteServer) serveStream(stream *yamux.Stream) {
 		return
 	}
 	defer conn.Close()
-	log.Debug("stream #%d data transfer", stream.StreamID())
+	log.Debug("stream #%d data transfer", stream.Id())
 
 	atomic.AddInt32(&rs.streamCount, 1)
-	streamID := stream.StreamID()
+	streamID := stream.Id()
 	readChan := make(chan int64, 1)
 	writeChan := make(chan int64, 1)
 	var readBytes int64
