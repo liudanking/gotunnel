@@ -12,40 +12,40 @@ import (
 )
 
 type RemoteServer struct {
-	laddr       *net.TCPAddr
-	raddr       *net.TCPAddr
+	laddr       string
+	raddr       string
+	ltls        bool
+	rtls        bool
 	streamCount int32
 }
 
-func NewRemoteServer(laddr, raddr string) (*RemoteServer, error) {
-	_laddr, err := net.ResolveTCPAddr("tcp", laddr)
-	if err != nil {
-		return nil, err
-	}
-	_raddr, err := net.ResolveTCPAddr("tcp", raddr)
-	if err != nil {
-		return nil, err
-	}
-
+func NewRemoteServer(laddr, raddr string, ltls, rtls bool) (*RemoteServer, error) {
 	rs := &RemoteServer{
-		laddr:       _laddr,
-		raddr:       _raddr,
+		laddr:       laddr,
+		raddr:       raddr,
+		ltls:        ltls,
+		rtls:        rtls,
 		streamCount: 0,
 	}
 	return rs, nil
 }
 
 func (rs *RemoteServer) Serve(certFile, keyFile string) {
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		log.Error("load cert/key error:%v", err)
-		return
+	var l net.Listener
+	var err error
+	if rs.ltls {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			log.Error("load cert/key error:%v", err)
+			return
+		}
+		config := tls.Config{Certificates: []tls.Certificate{cert}}
+		l, err = tls.Listen("tcp", rs.laddr, &config)
+	} else {
+		l, err = net.Listen("tcp", rs.laddr)
 	}
-	config := tls.Config{Certificates: []tls.Certificate{cert}}
-	// TODO: config
-	l, err := tls.Listen("tcp", rs.laddr.String(), &config)
 	if err != nil {
-		log.Error("net.ListenTCP(%s) error:%v", rs.laddr.String(), err)
+		log.Error("net.ListenTCP(%s) error:%v", rs.laddr, err)
 		return
 	}
 
@@ -81,7 +81,17 @@ func (rs *RemoteServer) handleTunnel(tunnel *yamux.Session) {
 func (rs *RemoteServer) serveStream(stream *yamux.Stream) {
 	defer stream.Close()
 	start := time.Now()
-	conn, err := net.DialTCP("tcp", nil, rs.raddr)
+	var conn net.Conn
+	var err error
+	if rs.rtls {
+		config := tls.Config{
+			InsecureSkipVerify: DEBUG,
+			ClientSessionCache: TLS_SESSION_CACHE,
+		}
+		conn, err = tls.Dial("tcp", rs.raddr, &config)
+	} else {
+		conn, err = net.Dial("tcp", rs.raddr)
+	}
 	if err != nil {
 		log.Error("connect to remote error:%v", err)
 		return

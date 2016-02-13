@@ -9,7 +9,7 @@ run-local: build
 	./gotunnel -d -m local -l 127.0.0.1:9000 -r tls-local.618033988.cc:9001 -t 1
 
 run-local-proxy-jp2: build
-	./gotunnel -d -m local -l 127.0.0.1:9000 -r gt-jp2.618033988.cc:9101 -t 2
+	./gotunnel -d -m local -l 127.0.0.1:9000 -r gt-jp2.618033988.cc:9101 -s 01 -t 2
 
 run-local-proxy-us2: build
 	./gotunnel -d -m local -l 127.0.0.1:9000 -r vultr-seattle.618033988.cc:9101 -t 2

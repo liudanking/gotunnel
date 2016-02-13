@@ -12,9 +12,28 @@ import (
 
 var TLS_SESSION_CACHE tls.ClientSessionCache = tls.NewLRUClientSessionCache(32)
 
-// createTunnel establishes a TLS connection to addr.
+func createTunnel(addr string, secure bool) (*yamux.Session, error) {
+	if secure {
+		return createTLSTunnel(addr)
+	}
+	return createTCPTunnel(addr)
+}
+
+// createTCPTunnel establishes a TCP connection to addr.
+func createTCPTunnel(addr string) (*yamux.Session, error) {
+	start := time.Now()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("tcp connection cost:%v", time.Now().Sub(start))
+	// TODO: config client
+	return yamux.Client(conn, nil)
+}
+
+// createTLSTunnel establishes a TLS connection to addr.
 // addr should be a domain, otherwise ServerName should be set
-func createTunnel(addr string) (*yamux.Session, error) {
+func createTLSTunnel(addr string) (*yamux.Session, error) {
 	start := time.Now()
 	config := tls.Config{
 		InsecureSkipVerify: DEBUG,

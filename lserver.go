@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"math/rand"
 	"net"
 	"sync"
@@ -22,16 +23,18 @@ const (
 type LocalServer struct {
 	laddr       string
 	raddr       string
+	ltls        bool
+	rtls        bool
 	tunnelCount int
 	tunnels     []*yamux.Session
 	tunnelsMtx  []sync.Mutex
 	streamCount int32
 }
 
-func NewLocalServer(laddr, raddr string, tunnelCount int) (*LocalServer, error) {
+func NewLocalServer(laddr, raddr string, ltls, rtls bool, tunnelCount int) (*LocalServer, error) {
 	tunnels := make([]*yamux.Session, tunnelCount)
 	for i := 0; i < tunnelCount; i++ {
-		tunnel, err := createTunnel(raddr)
+		tunnel, err := createTunnel(raddr, rtls)
 		if err != nil {
 			log.Error("create yamux client error:%v", err)
 			return nil, err
@@ -42,6 +45,8 @@ func NewLocalServer(laddr, raddr string, tunnelCount int) (*LocalServer, error) 
 	ls := &LocalServer{
 		laddr:       laddr,
 		raddr:       raddr,
+		ltls:        ltls,
+		rtls:        rtls,
 		tunnelCount: tunnelCount,
 		tunnels:     tunnels,
 		tunnelsMtx:  make([]sync.Mutex, tunnelCount),
@@ -50,8 +55,20 @@ func NewLocalServer(laddr, raddr string, tunnelCount int) (*LocalServer, error) 
 	return ls, nil
 }
 
-func (ls *LocalServer) Serve() {
-	l, err := net.Listen("tcp", ls.laddr)
+func (ls *LocalServer) Serve(certFile, keyFile string) {
+	var l net.Listener
+	var err error
+	if ls.ltls {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			log.Error("load cert/key error:%v", err)
+			return
+		}
+		config := tls.Config{Certificates: []tls.Certificate{cert}}
+		l, err = tls.Listen("tcp", ls.laddr, &config)
+	} else {
+		l, err = net.Listen("tcp", ls.laddr)
+	}
 	if err != nil {
 		log.Error("listen [%s] error:%v", ls.laddr, err)
 		return
@@ -117,7 +134,7 @@ func (ls *LocalServer) openStream(conn net.Conn) (stream *yamux.Stream, err erro
 				ls.tunnels[idx].RemoteAddr().String(),
 				ls.tunnels[idx].LocalAddr().String(),
 				ls.tunnels[idx].NumStreams())
-			tunnel, err := createTunnel(ls.raddr)
+			tunnel, err := createTunnel(ls.raddr, ls.rtls)
 			if err != nil {
 				log.Error("[2/3]try to create new tunnel error:%v", err)
 				return nil, err

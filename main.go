@@ -15,8 +15,9 @@ func main() {
 	mode := flag.String("m", "local", "mode: local or remote")
 	laddr := flag.String("l", "127.0.0.1:9000", "local address")
 	raddr := flag.String("r", "127.0.0.1:9001", "remote address")
-	cert := flag.String("c", "", "certificate (remote)")
-	key := flag.String("k", "", "private key (remote)")
+	secure := flag.String("s", "01", "secure mode: 01: listen tcp, remote tls (remote/local)")
+	cert := flag.String("c", "", "certificate (remote/local)")
+	key := flag.String("k", "", "private key (remote/local)")
 	tcount := flag.Int("t", 1, "tunnel count (local)")
 	flag.Parse()
 
@@ -37,17 +38,19 @@ func main() {
 	} else {
 		log.AddFilter("stdout", log.INFO, log.NewConsoleLogWriter())
 	}
+	ltls := (*secure)[0] == '1'
+	rtls := (*secure)[1] == '1'
 
 	switch *mode {
 	case "local":
-		localServer, err := NewLocalServer(*laddr, *raddr, *tcount)
+		localServer, err := NewLocalServer(*laddr, *raddr, ltls, rtls, *tcount)
 		if err != nil {
 			log.Error("NewLocalServer error:%v", err)
 			break
 		}
-		localServer.Serve()
+		localServer.Serve(*cert, *key)
 	case "remote":
-		remoteServer, err := NewRemoteServer(*laddr, *raddr)
+		remoteServer, err := NewRemoteServer(*laddr, *raddr, ltls, rtls)
 		if err != nil {
 			log.Error("NewRemoteServer error:%v", err)
 			break
